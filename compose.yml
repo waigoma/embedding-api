@@ -1,0 +1,27 @@
+services:
+  embedding:
+    image: local/embedding-server:latest
+    container_name: embedding
+    restart: unless-stopped
+    ports:
+      - "7997:7997"
+    volumes:
+      - /mnt/ai-models/embedding:/models:ro
+    environment:
+      # --- Preload: startup時にロードするモデル (空欄なら起動時ロードなし) ---
+      - PRELOAD_EMBEDDING=ruri-v3-310m
+      - PRELOAD_RERANKER=ruri-v3-reranker-310m
+      # --- Auto-load: /models 配下にあるモデルを初回リクエスト時に自動ロード ---
+      - AUTO_LOAD=1
+      # --- Idle TTL: 指定秒数アイドルで自動アンロード (0=無効) ---
+      - IDLE_TTL=0
+      # --- Model directory ---
+      - MODEL_DIR=/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+              device_ids: ["all"]
+
