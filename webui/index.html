@@ -97,6 +97,7 @@
         </label>
         <button id="downloadBtn">ダウンロード開始</button>
       </div>
+      <div class="muted" style="margin-top:6px;">※ repo_id は必ず <code>owner/repo</code> 形式で入力してください (例: <code>Qwen/Qwen3-Embedding-0.6B</code>)</div>
       <div id="downloadResult" class="muted" style="margin-top:8px;"></div>
     </div>
 
@@ -225,6 +226,10 @@
       const out = document.getElementById("downloadResult");
       if (!repoId) {
         out.textContent = "repo_id を入力してください。";
+        return;
+      }
+      if (!repoId.includes("/") || repoId.split("/").length !== 2) {
+        out.textContent = "repo_id は owner/repo 形式で入力してください (例: Qwen/Qwen3-Embedding-0.6B)。";
         return;
       }
       out.textContent = "リクエスト送信中...";

@@ -28,6 +28,7 @@ app = FastAPI(title="Embedding Server", version="2.0.0")
 MODEL_DIR = os.environ.get("MODEL_DIR", "/models")
 WEBUI_DIR = os.path.join(os.path.dirname(__file__), "webui")
 DEVICE_MODE = os.environ.get("DEVICE_MODE", "auto").strip().lower()
+HF_TOKEN = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
 IDLE_TTL = int(os.environ.get("IDLE_TTL", "0"))  # seconds, 0 = disabled
 AUTO_LOAD = os.environ.get("AUTO_LOAD", "1") == "1"
 PRELOAD_EMBEDDING = os.environ.get("PRELOAD_EMBEDDING", "").split(",")
@@ -168,13 +169,17 @@ def _run_download_job(job_id: str, repo_id: str, target_dir: str) -> None:
             local_dir=target_dir,
             local_dir_use_symlinks=False,
             resume_download=True,
+            token=HF_TOKEN,
         )
         _set_download_status(job_id, status="completed", finished_at=time.time())
     except Exception as exc:
+        hint = ""
+        if "401" in str(exc) or "403" in str(exc) or "gated" in str(exc).lower():
+            hint = " (set HF_TOKEN for private/gated models)"
         _set_download_status(
             job_id,
             status="failed",
-            error=str(exc),
+            error=f"{exc}{hint}",
             finished_at=time.time(),
         )
 
@@ -387,6 +392,11 @@ async def download_model(request: DownloadRequest):
     repo_id = request.repo_id.strip()
     if not repo_id:
         raise HTTPException(400, "repo_id is empty")
+    if repo_id.count("/") != 1:
+        raise HTTPException(
+            400,
+            "repo_id must be in 'owner/repo' format (e.g. Qwen/Qwen3-Embedding-0.6B)",
+        )
 
     local_name = _sanitize_local_name(request.local_name or _default_local_name(repo_id))
     target_dir = os.path.join(MODEL_DIR, local_name)
@@ -396,8 +406,15 @@ async def download_model(request: DownloadRequest):
         if os.listdir(target_dir) and not request.force:
             raise HTTPException(409, f"target already exists: {local_name} (set force=true)")
 
-    os.makedirs(MODEL_DIR, exist_ok=True)
-    os.makedirs(target_dir, exist_ok=True)
+    try:
+        os.makedirs(MODEL_DIR, exist_ok=True)
+        os.makedirs(target_dir, exist_ok=True)
+    except OSError as exc:
+        raise HTTPException(
+            500,
+            f"failed to prepare model directory: {exc}. "
+            "Check if MODEL_DIR is mounted writable (remove ':ro' from volume mount).",
+        ) from exc
 
     job_id = str(uuid.uuid4())
     job: dict[str, Any] = {

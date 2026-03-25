@@ -118,6 +118,12 @@ export SENTENCE_TRANSFORMER_KWARGS='{"model_kwargs":{"attn_implementation":"flas
 - ダウンロードジョブ状態の確認
 - ローカルモデル一覧の確認
 
+`/v1/models/download` は `download_from_huggingface.py` を直接実行する方式ではなく、  
+`server.py` 内の `huggingface_hub.snapshot_download()` をバックグラウンドジョブで実行します。
+
+そのため、モデルを保存する `/models` は書き込み可能である必要があります (`:rw`)。
+private / gated model を落とす場合は `HF_TOKEN` を設定してください。
+
 ### 起動後に開く URL
 
 ```text
@@ -138,3 +144,5 @@ curl -X POST http://localhost:7997/v1/models/download \
   -H "Content-Type: application/json" \
   -d '{"repo_id":"Qwen/Qwen3-Embedding-4B","local_name":"Qwen3-Embedding-4B"}'
 ```
+
+`repo_id` は必ず `owner/repo` 形式です。`Qwen` のような namespace のみ指定は失敗します。
