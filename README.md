@@ -115,8 +115,10 @@ export SENTENCE_TRANSFORMER_KWARGS='{"model_kwargs":{"attn_implementation":"flas
 
 - カタログから `repo_id` を選択
 - `Hugging Face` からモデルをダウンロード開始
-- ダウンロードジョブ状態の確認
-- ローカルモデル一覧の確認
+- ダウンロード進捗 (`0-100%`, `MB/s`, `downloaded/total size`) の確認
+- ローカルモデル一覧の確認と `Load` / (ロード済みのみ) `Unload`
+- ロード済みモデルのトップ表示
+- 推論ログ表示 (`embedding` / `rerank` 実行時)
 
 `/v1/models/download` は `download_from_huggingface.py` を直接実行する方式ではなく、  
 `server.py` 内の `huggingface_hub.snapshot_download()` をバックグラウンドジョブで実行します。
@@ -135,6 +137,7 @@ http://localhost:7997/ui
 - `POST /v1/models/download`
 - `GET /v1/models/downloads`
 - `GET /v1/models/downloads/{job_id}`
+- `GET /v1/logs/inference?limit=30`
 - `GET /v1/models/catalog`
 
 `POST /v1/models/download` の例:
@@ -146,3 +149,27 @@ curl -X POST http://localhost:7997/v1/models/download \
 ```
 
 `repo_id` は必ず `owner/repo` 形式です。`Qwen` のような namespace のみ指定は失敗します。
+
+### Embedding 動作確認のコツ
+
+`curl` で `{"detail":"There was an error parsing the body"}` が出る場合、  
+Windows / Git Bash の文字コード差分で JSON 本文が壊れている可能性があります。
+
+まずは ASCII 文字列で確認してください。
+
+```bash
+curl -X POST http://localhost:7997/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{"model":"Qwen3-Embedding-0.6B","input":"test"}'
+```
+
+日本語を送る場合は UTF-8 の JSON ファイル経由が安全です。
+
+```bash
+cat > payload.json <<'EOF'
+{"model":"Qwen3-Embedding-0.6B","input":"これはテストです"}
+EOF
+curl -X POST http://localhost:7997/v1/embeddings \
+  -H "Content-Type: application/json; charset=utf-8" \
+  --data-binary @payload.json
+```

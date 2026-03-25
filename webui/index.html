@@ -87,6 +87,11 @@
     </div>
 
     <div class="card">
+      <h2>現在ロード中のモデル</h2>
+      <div id="loadedTop" class="muted">loading...</div>
+    </div>
+
+    <div class="card">
       <h2>モデルをダウンロード (Hugging Face)</h2>
       <div class="row">
         <select id="catalogSelect"></select>
@@ -112,11 +117,22 @@
             <th>status</th>
             <th>repo_id</th>
             <th>local_name</th>
+            <th>progress</th>
+            <th>speed</th>
+            <th>size</th>
             <th>error</th>
           </tr>
         </thead>
         <tbody id="jobsBody"></tbody>
       </table>
+    </div>
+
+    <div class="card">
+      <h2>直近の推論ログ (Embedding / Rerank)</h2>
+      <div class="row" style="margin-bottom:8px;">
+        <button id="refreshInferenceLogsBtn">更新</button>
+      </div>
+      <div id="inferenceLogsBox" class="muted">読み込み中...</div>
     </div>
 
     <div class="card">
@@ -130,6 +146,7 @@
             <th>id</th>
             <th>type</th>
             <th>loaded</th>
+            <th>actions</th>
           </tr>
         </thead>
         <tbody id="modelsBody"></tbody>
@@ -153,6 +170,18 @@
       if (s === "completed") return "status-ok";
       if (s === "failed") return "status-err";
       return "status-warn";
+    }
+
+    function formatBytes(bytes) {
+      if (bytes === null || bytes === undefined || Number.isNaN(bytes)) return "-";
+      const units = ["B", "KB", "MB", "GB", "TB"];
+      let n = Number(bytes);
+      let i = 0;
+      while (n >= 1024 && i < units.length - 1) {
+        n /= 1024;
+        i += 1;
+      }
+      return `${n.toFixed(i === 0 ? 0 : 2)} ${units[i]}`;
     }
 
     async function loadCatalog() {
@@ -184,14 +213,63 @@
       body.innerHTML = "";
       for (const row of data.data || []) {
         const tr = document.createElement("tr");
+        const progress = row.progress_percent === null || row.progress_percent === undefined
+          ? "-"
+          : `${row.progress_percent.toFixed(2)}%`;
+        const speed = row.speed_mbps === null || row.speed_mbps === undefined
+          ? "-"
+          : `${row.speed_mbps.toFixed(2)} MB/s`;
+        const size = `${formatBytes(row.downloaded_bytes)} / ${formatBytes(row.total_bytes)}`;
         tr.innerHTML = `
           <td class="${statusClass(row.status)}">${row.status}</td>
           <td><code>${row.repo_id || ""}</code></td>
           <td><code>${row.local_name || ""}</code></td>
+          <td>${progress}</td>
+          <td>${speed}</td>
+          <td>${size}</td>
           <td class="status-err">${row.error || ""}</td>
         `;
         body.appendChild(tr);
       }
+    }
+
+    async function loadInferenceLogs() {
+      const box = document.getElementById("inferenceLogsBox");
+      const data = await getJson("/v1/logs/inference?limit=30");
+      const logs = data.data || [];
+      if (logs.length === 0) {
+        box.textContent = "推論ログはまだありません。";
+        return;
+      }
+      box.innerHTML = logs.map((row) => {
+        const t = new Date((row.timestamp || 0) * 1000).toLocaleString();
+        const d = row.details || {};
+        const speed = row.duration_ms !== undefined ? `${row.duration_ms} ms` : "-";
+        const status = d.status || row.level || "info";
+        return `<div>[${t}] <code>${row.event || "inference"}</code> <code>${row.model || "-"}</code> status=${status} duration=${speed}</div>`;
+      }).join("");
+    }
+
+    async function loadModelById(modelId, modelType) {
+      const res = await fetch("/v1/models/load", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model_id: modelId, model_type: modelType }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || res.statusText);
+      return data;
+    }
+
+    async function unloadModelById(modelId) {
+      const res = await fetch("/v1/models/unload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model_id: modelId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || res.statusText);
+      return data;
     }
 
     async function loadModels() {
@@ -200,18 +278,55 @@
       body.innerHTML = "";
       for (const row of data.data || []) {
         const tr = document.createElement("tr");
+        const loadType = row.type === "reranker" ? "reranker" : "embedding";
+        const actionHtml = row.loaded
+          ? `<button data-action="unload" data-model-id="${row.id}">Unload</button>`
+          : `<button data-action="load" data-model-id="${row.id}" data-model-type="${loadType}">Load</button>`;
         tr.innerHTML = `
           <td><code>${row.id || ""}</code></td>
           <td>${row.type || ""}</td>
           <td>${row.loaded ? "yes" : "no"}</td>
+          <td>${actionHtml}</td>
         `;
         body.appendChild(tr);
+      }
+      for (const btn of body.querySelectorAll("button[data-action='load']")) {
+        btn.onclick = async () => {
+          try {
+            await loadModelById(btn.dataset.modelId, btn.dataset.modelType);
+            await loadModels();
+            await loadHealth();
+          } catch (e) {
+            alert(`Load failed: ${e.message}`);
+          }
+        };
+      }
+      for (const btn of body.querySelectorAll("button[data-action='unload']")) {
+        btn.onclick = async () => {
+          try {
+            await unloadModelById(btn.dataset.modelId);
+            await loadModels();
+            await loadHealth();
+          } catch (e) {
+            alert(`Unload failed: ${e.message}`);
+          }
+        };
       }
     }
 
     async function loadHealth() {
       const node = document.getElementById("health");
+      const loadedTop = document.getElementById("loadedTop");
       const h = await getJson("/health");
+      const loaded = h.loaded || {};
+      const loadedEntries = Object.entries(loaded);
+      if (loadedEntries.length === 0) {
+        loadedTop.innerHTML = "<span class='muted'>ロード済みモデルはありません。</span>";
+      } else {
+        loadedTop.innerHTML = loadedEntries
+          .map(([k, v]) => `<div><code>${k}</code> <span class="muted">(${v})</span></div>`)
+          .join("");
+      }
       node.innerHTML = `
         <div>device: <code>${h.device}</code> / backend: <code>${h.accelerator_backend}</code></div>
         <div>mode: <code>${h.device_mode}</code>, auto_load: <code>${h.auto_load}</code></div>
@@ -255,10 +370,17 @@
       await loadJobs();
       await loadModels();
       await loadHealth();
+      await loadInferenceLogs();
       document.getElementById("downloadBtn").onclick = downloadModel;
       document.getElementById("refreshJobsBtn").onclick = loadJobs;
       document.getElementById("refreshModelsBtn").onclick = loadModels;
-      setInterval(() => { loadJobs().catch(() => {}); }, 5000);
+      document.getElementById("refreshInferenceLogsBtn").onclick = () => loadInferenceLogs().catch((e) => {
+        document.getElementById("inferenceLogsBox").textContent = `ログ取得失敗: ${e.message}`;
+      });
+      setInterval(() => {
+        loadJobs().catch(() => {});
+        loadInferenceLogs().catch(() => {});
+      }, 5000);
     }
 
     bootstrap().catch((e) => {

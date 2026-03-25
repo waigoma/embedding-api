@@ -12,6 +12,8 @@ import threading
 import logging
 import json
 import uuid
+import traceback
+from contextlib import asynccontextmanager
 from typing import Any, Optional
 
 import torch
@@ -23,12 +25,13 @@ from pydantic import BaseModel
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("embedding-server")
 
-app = FastAPI(title="Embedding Server", version="2.0.0")
-
 MODEL_DIR = os.environ.get("MODEL_DIR", "/models")
 WEBUI_DIR = os.path.join(os.path.dirname(__file__), "webui")
 DEVICE_MODE = os.environ.get("DEVICE_MODE", "auto").strip().lower()
 HF_TOKEN = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
+DOWNLOAD_PROGRESS_INTERVAL_SEC = float(os.environ.get("DOWNLOAD_PROGRESS_INTERVAL_SEC", "1.0"))
+DOWNLOAD_MAX_LOGS = int(os.environ.get("DOWNLOAD_MAX_LOGS", "200"))
+INFERENCE_MAX_LOGS = int(os.environ.get("INFERENCE_MAX_LOGS", "300"))
 IDLE_TTL = int(os.environ.get("IDLE_TTL", "0"))  # seconds, 0 = disabled
 AUTO_LOAD = os.environ.get("AUTO_LOAD", "1") == "1"
 PRELOAD_EMBEDDING = os.environ.get("PRELOAD_EMBEDDING", "").split(",")
@@ -122,6 +125,8 @@ registry: dict[str, ModelEntry] = {}
 registry_lock = threading.Lock()
 download_jobs: dict[str, dict[str, Any]] = {}
 download_lock = threading.Lock()
+inference_logs: list[dict[str, Any]] = []
+inference_lock = threading.Lock()
 
 
 def _resolve_path(model_id: str) -> str:
@@ -150,6 +155,84 @@ def _set_download_status(job_id: str, **updates: Any) -> None:
         job.update(updates)
 
 
+def _append_download_log(job_id: str, level: str, message: str) -> None:
+    event = {
+        "timestamp": time.time(),
+        "level": level,
+        "message": message,
+    }
+    with download_lock:
+        job = download_jobs.get(job_id)
+        if not job:
+            return
+        logs = job.setdefault("logs", [])
+        logs.append(event)
+        if len(logs) > DOWNLOAD_MAX_LOGS:
+            del logs[: len(logs) - DOWNLOAD_MAX_LOGS]
+        job["updated_at"] = event["timestamp"]
+
+
+def _dir_size_bytes(path: str) -> int:
+    total = 0
+    if not os.path.exists(path):
+        return 0
+    for root, _, files in os.walk(path):
+        for name in files:
+            fp = os.path.join(root, name)
+            try:
+                total += os.path.getsize(fp)
+            except OSError:
+                pass
+    return total
+
+
+def _estimate_repo_size(repo_id: str) -> Optional[int]:
+    try:
+        from huggingface_hub import HfApi
+
+        info = HfApi(token=HF_TOKEN).model_info(repo_id, files_metadata=True)
+        total = 0
+        found = False
+        for sibling in info.siblings or []:
+            size = getattr(sibling, "size", None)
+            if isinstance(size, int) and size > 0:
+                total += size
+                found = True
+        return total if found else None
+    except Exception:
+        return None
+
+
+def _serialize_download_job(job: dict[str, Any], include_logs: bool = False) -> dict[str, Any]:
+    payload = {k: v for k, v in job.items() if k != "logs"}
+    payload["logs_count"] = len(job.get("logs", []))
+    payload["last_log"] = job.get("logs", [])[-1] if job.get("logs") else None
+    if include_logs:
+        payload["logs"] = list(job.get("logs", []))
+    return payload
+
+
+def _append_inference_log(
+    event: str,
+    model_id: str,
+    duration_ms: float,
+    details: dict[str, Any],
+    level: str = "info",
+) -> None:
+    record = {
+        "timestamp": time.time(),
+        "level": level,
+        "event": event,
+        "model": model_id,
+        "duration_ms": round(duration_ms, 2),
+        "details": details,
+    }
+    with inference_lock:
+        inference_logs.append(record)
+        if len(inference_logs) > INFERENCE_MAX_LOGS:
+            del inference_logs[: len(inference_logs) - INFERENCE_MAX_LOGS]
+
+
 def _run_download_job(job_id: str, repo_id: str, target_dir: str) -> None:
     try:
         from huggingface_hub import snapshot_download
@@ -162,26 +245,105 @@ def _run_download_job(job_id: str, repo_id: str, target_dir: str) -> None:
         )
         return
 
+    total_bytes = _estimate_repo_size(repo_id)
+    _set_download_status(job_id, total_bytes=total_bytes)
+    if total_bytes:
+        _append_download_log(job_id, "info", f"estimated total size: {total_bytes} bytes")
+    else:
+        _append_download_log(job_id, "info", "total size estimate unavailable")
+
+    result: dict[str, Any] = {}
+    start_wall = time.time()
+    start_size = _dir_size_bytes(target_dir)
+
+    def _download_worker():
+        try:
+            snapshot_download(
+                repo_id=repo_id,
+                local_dir=target_dir,
+                local_dir_use_symlinks=False,
+                resume_download=True,
+                token=HF_TOKEN,
+            )
+            result["ok"] = True
+        except Exception as exc:
+            result["error"] = exc
+            result["traceback"] = traceback.format_exc()
+
+    worker = threading.Thread(target=_download_worker, daemon=True)
     _set_download_status(job_id, status="downloading", started_at=time.time())
-    try:
-        snapshot_download(
-            repo_id=repo_id,
-            local_dir=target_dir,
-            local_dir_use_symlinks=False,
-            resume_download=True,
-            token=HF_TOKEN,
-        )
-        _set_download_status(job_id, status="completed", finished_at=time.time())
-    except Exception as exc:
-        hint = ""
-        if "401" in str(exc) or "403" in str(exc) or "gated" in str(exc).lower():
-            hint = " (set HF_TOKEN for private/gated models)"
+    _append_download_log(job_id, "info", f"download started: {repo_id} -> {target_dir}")
+    worker.start()
+
+    last_t = start_wall
+    last_size = start_size
+    interval = max(0.2, DOWNLOAD_PROGRESS_INTERVAL_SEC)
+    while worker.is_alive():
+        time.sleep(interval)
+        now = time.time()
+        current_size = _dir_size_bytes(target_dir)
+        downloaded = max(0, current_size - start_size)
+        elapsed = max(1e-6, now - start_wall)
+        speed_bps = max(0.0, (current_size - last_size) / max(1e-6, now - last_t))
+        speed_mbps = speed_bps / (1024 * 1024)
+        progress_percent = None
+        eta_seconds = None
+        if total_bytes and total_bytes > 0:
+            progress_percent = min(100.0, (downloaded / total_bytes) * 100.0)
+            if speed_bps > 1:
+                remain = max(0, total_bytes - downloaded)
+                eta_seconds = remain / speed_bps
         _set_download_status(
             job_id,
-            status="failed",
-            error=f"{exc}{hint}",
-            finished_at=time.time(),
+            updated_at=now,
+            downloaded_bytes=downloaded,
+            speed_mbps=round(speed_mbps, 2),
+            elapsed_seconds=round(elapsed, 2),
+            progress_percent=round(progress_percent, 2) if progress_percent is not None else None,
+            eta_seconds=round(eta_seconds, 1) if eta_seconds is not None else None,
         )
+        last_t = now
+        last_size = current_size
+
+    worker.join()
+    finished = time.time()
+    final_size = _dir_size_bytes(target_dir)
+    downloaded_final = max(0, final_size - start_size)
+
+    if result.get("ok"):
+        _set_download_status(
+            job_id,
+            status="completed",
+            finished_at=finished,
+            updated_at=finished,
+            downloaded_bytes=downloaded_final,
+            speed_mbps=0.0,
+            progress_percent=100.0 if total_bytes else None,
+            eta_seconds=0.0 if total_bytes else None,
+        )
+        _append_download_log(job_id, "info", f"download completed: {repo_id}")
+        return
+
+    exc = result.get("error")
+    msg = str(exc) if exc else "unknown download error"
+    hint = ""
+    lower = msg.lower()
+    if "401" in msg or "403" in msg or "gated" in lower:
+        hint = " (set HF_TOKEN for private/gated models)"
+    if "timeout" in lower:
+        _append_download_log(job_id, "error", "timeout detected during model download")
+    _append_download_log(job_id, "error", msg)
+    if result.get("traceback"):
+        _append_download_log(job_id, "error", result["traceback"])
+    _set_download_status(
+        job_id,
+        status="failed",
+        error=f"{msg}{hint}",
+        finished_at=finished,
+        updated_at=finished,
+        downloaded_bytes=downloaded_final,
+        speed_mbps=0.0,
+    )
 
 
 def _load_embedding(model_id: str) -> ModelEntry:
@@ -256,8 +418,7 @@ def _idle_checker():
             _unload(mid)
 
 
-@app.on_event("startup")
-async def startup():
+def _startup_once():
     logger.info(f"Device mode: {DEVICE_MODE}")
     logger.info(f"Device: {DEVICE}, backend: {ACCELERATOR_BACKEND}")
     if DEVICE == "cuda":
@@ -277,6 +438,15 @@ async def startup():
             registry[mid] = _load_reranker(mid)
 
     threading.Thread(target=_idle_checker, daemon=True).start()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    _startup_once()
+    yield
+
+
+app = FastAPI(title="Embedding Server", version="2.0.0", lifespan=lifespan)
 
 
 # --- Schemas ---
@@ -347,8 +517,17 @@ class DownloadStatusResponse(BaseModel):
     target_dir: str
     status: str
     created_at: float
+    updated_at: Optional[float] = None
     started_at: Optional[float] = None
     finished_at: Optional[float] = None
+    elapsed_seconds: Optional[float] = None
+    progress_percent: Optional[float] = None
+    total_bytes: Optional[int] = None
+    downloaded_bytes: Optional[int] = None
+    speed_mbps: Optional[float] = None
+    eta_seconds: Optional[float] = None
+    logs_count: Optional[int] = None
+    last_log: Optional[dict[str, Any]] = None
     error: Optional[str] = None
 
 
@@ -424,8 +603,16 @@ async def download_model(request: DownloadRequest):
         "target_dir": target_dir,
         "status": "queued",
         "created_at": time.time(),
+        "updated_at": time.time(),
         "started_at": None,
         "finished_at": None,
+        "elapsed_seconds": 0.0,
+        "progress_percent": 0.0,
+        "total_bytes": None,
+        "downloaded_bytes": 0,
+        "speed_mbps": 0.0,
+        "eta_seconds": None,
+        "logs": [],
         "error": None,
     }
     with download_lock:
@@ -436,14 +623,14 @@ async def download_model(request: DownloadRequest):
         args=(job_id, repo_id, target_dir),
         daemon=True,
     ).start()
-    return DownloadStatusResponse(**job)
+    return DownloadStatusResponse(**_serialize_download_job(job))
 
 
 @app.get("/v1/models/downloads")
 @app.get("/models/downloads")
 async def list_download_jobs():
     with download_lock:
-        jobs = list(download_jobs.values())
+        jobs = [_serialize_download_job(job) for job in download_jobs.values()]
     jobs.sort(key=lambda x: x["created_at"], reverse=True)
     return {"object": "list", "data": jobs}
 
@@ -455,7 +642,16 @@ async def get_download_job(job_id: str):
         job = download_jobs.get(job_id)
     if not job:
         raise HTTPException(404, f"download job not found: {job_id}")
-    return DownloadStatusResponse(**job)
+    return DownloadStatusResponse(**_serialize_download_job(job))
+
+
+@app.get("/v1/logs/inference")
+@app.get("/logs/inference")
+async def get_inference_logs(limit: int = 50):
+    capped = max(1, min(limit, 500))
+    with inference_lock:
+        data = list(inference_logs[-capped:])
+    return {"object": "list", "data": data}
 
 
 @app.post("/v1/models/load")
@@ -488,38 +684,72 @@ async def unload_model(request: UnloadRequest):
 @app.post("/v1/embeddings", response_model=EmbeddingResponse)
 @app.post("/embeddings", response_model=EmbeddingResponse)
 async def create_embeddings(request: EmbeddingRequest):
-    entry = _get_model(request.model, "embedding")
+    t0 = time.time()
     inputs = request.input if isinstance(request.input, list) else [request.input]
-    embeddings = entry.model.encode(inputs, convert_to_numpy=True, normalize_embeddings=True)
-    data = [EmbeddingData(embedding=emb.tolist(), index=i) for i, emb in enumerate(embeddings)]
     tokens = sum(len(s) // 4 for s in inputs)
-    return EmbeddingResponse(
-        data=data, model=request.model,
-        usage={"prompt_tokens": tokens, "total_tokens": tokens},
-    )
+    try:
+        entry = _get_model(request.model, "embedding")
+        embeddings = entry.model.encode(inputs, convert_to_numpy=True, normalize_embeddings=True)
+        data = [EmbeddingData(embedding=emb.tolist(), index=i) for i, emb in enumerate(embeddings)]
+        _append_inference_log(
+            event="embedding",
+            model_id=request.model,
+            duration_ms=(time.time() - t0) * 1000.0,
+            details={"inputs_count": len(inputs), "prompt_tokens": tokens, "status": "ok"},
+        )
+        return EmbeddingResponse(
+            data=data, model=request.model,
+            usage={"prompt_tokens": tokens, "total_tokens": tokens},
+        )
+    except Exception as exc:
+        _append_inference_log(
+            event="embedding",
+            model_id=request.model,
+            duration_ms=(time.time() - t0) * 1000.0,
+            details={"inputs_count": len(inputs), "prompt_tokens": tokens, "status": "error", "error": str(exc)},
+            level="error",
+        )
+        raise
 
 
 @app.post("/v1/rerank", response_model=RerankResponse)
 @app.post("/rerank", response_model=RerankResponse)
 async def rerank(request: RerankRequest):
-    entry = _get_model(request.model, "reranker")
-    pairs = [[request.query, doc] for doc in request.documents]
-    scores = entry.model.predict(pairs).tolist()
-    results = [
-        RerankResult(
-            index=i, relevance_score=float(s),
-            document=request.documents[i] if request.return_documents else None,
-        )
-        for i, s in enumerate(scores)
-    ]
-    results.sort(key=lambda x: x.relevance_score, reverse=True)
-    if request.top_n:
-        results = results[: request.top_n]
+    t0 = time.time()
     tokens = sum(len(d) // 4 for d in request.documents)
-    return RerankResponse(
-        results=results, model=request.model,
-        usage={"prompt_tokens": tokens, "total_tokens": tokens},
-    )
+    try:
+        entry = _get_model(request.model, "reranker")
+        pairs = [[request.query, doc] for doc in request.documents]
+        scores = entry.model.predict(pairs).tolist()
+        results = [
+            RerankResult(
+                index=i, relevance_score=float(s),
+                document=request.documents[i] if request.return_documents else None,
+            )
+            for i, s in enumerate(scores)
+        ]
+        results.sort(key=lambda x: x.relevance_score, reverse=True)
+        if request.top_n:
+            results = results[: request.top_n]
+        _append_inference_log(
+            event="rerank",
+            model_id=request.model,
+            duration_ms=(time.time() - t0) * 1000.0,
+            details={"documents_count": len(request.documents), "prompt_tokens": tokens, "status": "ok"},
+        )
+        return RerankResponse(
+            results=results, model=request.model,
+            usage={"prompt_tokens": tokens, "total_tokens": tokens},
+        )
+    except Exception as exc:
+        _append_inference_log(
+            event="rerank",
+            model_id=request.model,
+            duration_ms=(time.time() - t0) * 1000.0,
+            details={"documents_count": len(request.documents), "prompt_tokens": tokens, "status": "error", "error": str(exc)},
+            level="error",
+        )
+        raise
 
 
 @app.get("/health")
