@@ -94,15 +94,14 @@
     <div class="card">
       <h2>モデルをダウンロード (Hugging Face)</h2>
       <div class="row">
-        <select id="catalogSelect"></select>
         <input id="repoId" placeholder="repo_id (例: Qwen/Qwen3-Embedding-4B)" />
-        <input id="localName" placeholder="保存ディレクトリ名 (任意)" />
+        <input id="localName" placeholder="MODEL_DIR 下の相対パス (例: embedding/Qwen3-0.6B)" style="min-width:280px;" />
         <label style="display:flex;align-items:center;gap:6px;">
           <input id="force" type="checkbox" style="min-width:0;"> force
         </label>
         <button id="downloadBtn">ダウンロード開始</button>
       </div>
-      <div class="muted" style="margin-top:6px;">※ repo_id は必ず <code>owner/repo</code> 形式で入力してください (例: <code>Qwen/Qwen3-Embedding-0.6B</code>)</div>
+      <div class="muted" style="margin-top:6px;">※ repo_id は必ず <code>owner/repo</code> 形式。保存先は省略時はリポ名の末尾のみ。階層は <code>embedding/…</code> や <code>reranker/…</code> など <code>MODEL_DIR</code> からの相対パスで指定できます。</div>
       <div id="downloadResult" class="muted" style="margin-top:8px;"></div>
     </div>
 
@@ -182,29 +181,6 @@
         i += 1;
       }
       return `${n.toFixed(i === 0 ? 0 : 2)} ${units[i]}`;
-    }
-
-    async function loadCatalog() {
-      const select = document.getElementById("catalogSelect");
-      const data = await getJson("/v1/models/catalog");
-      select.innerHTML = "";
-      const initial = document.createElement("option");
-      initial.value = "";
-      initial.textContent = "カタログから選択 (任意)";
-      select.appendChild(initial);
-      for (const row of data.data || []) {
-        const id = row.repo_id || "";
-        const type = row.type || "unknown";
-        const opt = document.createElement("option");
-        opt.value = id;
-        opt.textContent = `${id} (${type})`;
-        select.appendChild(opt);
-      }
-      select.onchange = () => {
-        if (select.value) {
-          document.getElementById("repoId").value = select.value;
-        }
-      };
     }
 
     async function loadJobs() {
@@ -331,6 +307,7 @@
         <div>device: <code>${h.device}</code> / backend: <code>${h.accelerator_backend}</code></div>
         <div>mode: <code>${h.device_mode}</code>, auto_load: <code>${h.auto_load}</code></div>
         <div>gpu: <code>${h.gpu ? h.gpu.name : "none"}</code></div>
+        <div>vram: <code>${h.gpu ? `${h.gpu.vram_used_mb} / ${h.gpu.vram_total_mb} MB (free: ${h.gpu.vram_free_mb} MB)` : "n/a"}</code></div>
       `;
     }
 
@@ -366,7 +343,6 @@
     }
 
     async function bootstrap() {
-      await loadCatalog();
       await loadJobs();
       await loadModels();
       await loadHealth();

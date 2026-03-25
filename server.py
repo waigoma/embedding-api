@@ -13,6 +13,9 @@ import logging
 import json
 import uuid
 import traceback
+import asyncio
+import urllib.request
+import urllib.error
 from contextlib import asynccontextmanager
 from typing import Any, Optional
 
@@ -32,6 +35,9 @@ HF_TOKEN = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
 DOWNLOAD_PROGRESS_INTERVAL_SEC = float(os.environ.get("DOWNLOAD_PROGRESS_INTERVAL_SEC", "1.0"))
 DOWNLOAD_MAX_LOGS = int(os.environ.get("DOWNLOAD_MAX_LOGS", "200"))
 INFERENCE_MAX_LOGS = int(os.environ.get("INFERENCE_MAX_LOGS", "300"))
+LLM_PROXY_BASE_URL = os.environ.get("LLM_PROXY_BASE_URL", "").strip().rstrip("/")
+LLM_PROXY_API_KEY = os.environ.get("LLM_PROXY_API_KEY", "").strip()
+LLM_PROXY_TIMEOUT_SEC = float(os.environ.get("LLM_PROXY_TIMEOUT_SEC", "120"))
 IDLE_TTL = int(os.environ.get("IDLE_TTL", "0"))  # seconds, 0 = disabled
 AUTO_LOAD = os.environ.get("AUTO_LOAD", "1") == "1"
 PRELOAD_EMBEDDING = os.environ.get("PRELOAD_EMBEDDING", "").split(",")
@@ -129,9 +135,61 @@ inference_logs: list[dict[str, Any]] = []
 inference_lock = threading.Lock()
 
 
+def _model_local_path(model_id: str) -> str:
+    """Full path under MODEL_DIR for a relative model id (supports nested dirs). Rejects path traversal."""
+    stripped = model_id.strip()
+    parts = [p for p in stripped.replace("\\", "/").split("/") if p and p != "."]
+    if not parts:
+        raise HTTPException(400, "model_id is empty or invalid")
+    if ".." in parts:
+        raise HTTPException(400, "invalid model_id")
+    return os.path.join(MODEL_DIR, *parts)
+
+
+_SKIP_WALK_SUBDIRS = frozenset({".cache", "__pycache__", ".git"})
+
+
+def _dir_has_model_config(files: list[str]) -> bool:
+    """Typical Hugging Face / PEFT root: config at this directory level (not every subfolder with files)."""
+    names = frozenset(files)
+    return "config.json" in names or "adapter_config.json" in names
+
+
+def _iter_local_model_relative_ids() -> list[str]:
+    """List model roots: directories with config.json (or adapter_config.json), excluding cache/submodules."""
+    if not os.path.isdir(MODEL_DIR):
+        return []
+    candidates: list[str] = []
+    for root, dirs, files in os.walk(MODEL_DIR):
+        dirs[:] = [d for d in dirs if d not in _SKIP_WALK_SUBDIRS and not d.startswith(".")]
+        if root == MODEL_DIR:
+            continue
+        if not _dir_has_model_config(files):
+            continue
+        rel = os.path.relpath(root, MODEL_DIR)
+        if rel in (".", ""):
+            continue
+        candidates.append(rel.replace(os.sep, "/"))
+
+    candidates.sort(key=lambda r: (len(r.split("/")), r))
+    roots: list[str] = []
+    for rel in candidates:
+        if any(rel.startswith(p + "/") for p in roots):
+            continue
+        roots.append(rel)
+    return sorted(roots)
+
+
 def _resolve_path(model_id: str) -> str:
-    local = os.path.join(MODEL_DIR, model_id)
-    return local if os.path.isdir(local) else model_id
+    stripped = model_id.strip()
+    if not stripped:
+        raise HTTPException(400, "model_id is empty")
+    local = _model_local_path(stripped)
+    if os.path.isdir(local):
+        return local
+    if os.path.isdir(stripped):
+        return stripped
+    return stripped
 
 
 def _default_local_name(repo_id: str) -> str:
@@ -139,12 +197,20 @@ def _default_local_name(repo_id: str) -> str:
 
 
 def _sanitize_local_name(local_name: str) -> str:
-    cleaned = local_name.strip().replace("\\", "/")
+    """Relative path under MODEL_DIR, e.g. embedding/Qwen3-Embedding-0.6B or reranker/ruri-v3-reranker-310m."""
+    cleaned = local_name.strip().replace("\\", "/").strip("/")
     if not cleaned:
         raise HTTPException(400, "local_name is empty")
-    if "/" in cleaned or cleaned in {".", ".."}:
-        raise HTTPException(400, "local_name must be a single directory name")
-    return cleaned
+    parts = [p for p in cleaned.split("/") if p]
+    for p in parts:
+        if p in (".", ".."):
+            raise HTTPException(400, "local_name must not contain '.' or '..' segments")
+    rel = "/".join(parts)
+    base = os.path.abspath(MODEL_DIR)
+    candidate = os.path.abspath(os.path.join(MODEL_DIR, *parts))
+    if candidate != base and not candidate.startswith(base + os.sep):
+        raise HTTPException(400, "local_name must stay under MODEL_DIR")
+    return rel
 
 
 def _set_download_status(job_id: str, **updates: Any) -> None:
@@ -231,6 +297,77 @@ def _append_inference_log(
         inference_logs.append(record)
         if len(inference_logs) > INFERENCE_MAX_LOGS:
             del inference_logs[: len(inference_logs) - INFERENCE_MAX_LOGS]
+
+
+def _normalize_response_input(input_value: Any) -> list[str]:
+    # Accept a subset of OpenAI Responses API input shapes:
+    # - "text"
+    # - ["text1", "text2"]
+    # - [{"role":"user","content":"text"}]
+    # - [{"role":"user","content":[{"type":"input_text","text":"text"}]}]
+    if isinstance(input_value, str):
+        return [input_value]
+    if isinstance(input_value, list):
+        texts: list[str] = []
+        for item in input_value:
+            if isinstance(item, str):
+                texts.append(item)
+                continue
+            if isinstance(item, dict):
+                content = item.get("content")
+                if isinstance(content, str):
+                    texts.append(content)
+                    continue
+                if isinstance(content, list):
+                    for chunk in content:
+                        if not isinstance(chunk, dict):
+                            continue
+                        if chunk.get("type") in {"input_text", "text"} and isinstance(chunk.get("text"), str):
+                            texts.append(chunk["text"])
+                    continue
+                if isinstance(item.get("text"), str):
+                    texts.append(item["text"])
+                    continue
+        return [t for t in texts if t.strip()]
+    return []
+
+
+def _encode_embeddings(model_id: str, inputs: list[str]) -> tuple[list[list[float]], int]:
+    entry = _get_model(model_id, "embedding")
+    vectors = entry.model.encode(inputs, convert_to_numpy=True, normalize_embeddings=True)
+    embeddings = [vec.tolist() for vec in vectors]
+    tokens = sum(len(s) // 4 for s in inputs)
+    return embeddings, tokens
+
+
+def _proxy_chat_completions(payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    if not LLM_PROXY_BASE_URL:
+        raise HTTPException(
+            501,
+            "chat completions backend is not configured. Set LLM_PROXY_BASE_URL "
+            "(e.g. http://localhost:11434/v1 or llama.cpp OpenAI endpoint).",
+        )
+    url = f"{LLM_PROXY_BASE_URL}/chat/completions"
+    body = json.dumps(payload).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if LLM_PROXY_API_KEY:
+        headers["Authorization"] = f"Bearer {LLM_PROXY_API_KEY}"
+    req = urllib.request.Request(url=url, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=LLM_PROXY_TIMEOUT_SEC) as res:
+            raw = res.read().decode("utf-8")
+            parsed = json.loads(raw) if raw else {}
+            return int(res.status), parsed
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(detail)
+            msg = parsed.get("error", {}).get("message") or parsed.get("detail") or detail
+        except Exception:
+            msg = detail or str(exc)
+        raise HTTPException(exc.code, f"upstream chat backend error: {msg}") from exc
+    except urllib.error.URLError as exc:
+        raise HTTPException(502, f"failed to reach chat backend: {exc}") from exc
 
 
 def _run_download_job(job_id: str, repo_id: str, target_dir: str) -> None:
@@ -389,7 +526,7 @@ def _get_model(model_id: str, expected_type: str) -> ModelEntry:
         entry.touch()
         return entry
 
-    if AUTO_LOAD and os.path.isdir(os.path.join(MODEL_DIR, model_id)):
+    if AUTO_LOAD and os.path.isdir(_model_local_path(model_id)):
         loader = _load_embedding if expected_type == "embedding" else _load_reranker
         entry = loader(model_id)
         with registry_lock:
@@ -465,6 +602,20 @@ class EmbeddingResponse(BaseModel):
     data: list[EmbeddingData]
     model: str
     usage: dict
+
+
+class ResponsesEmbeddingRequest(BaseModel):
+    model: str
+    input: Any
+
+
+class ChatCompletionsRequest(BaseModel):
+    model: str
+    messages: list[dict[str, Any]]
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    max_tokens: Optional[int] = None
+    stream: Optional[bool] = False
 
 class RerankRequest(BaseModel):
     model: str
@@ -544,9 +695,9 @@ async def list_models():
             ))
     loaded_ids = {m.id for m in models}
     if os.path.isdir(MODEL_DIR):
-        for name in sorted(os.listdir(MODEL_DIR)):
-            if os.path.isdir(os.path.join(MODEL_DIR, name)) and name not in loaded_ids:
-                models.append(ModelInfo(id=name, type="unknown", loaded=False))
+        for rel in _iter_local_model_relative_ids():
+            if rel not in loaded_ids:
+                models.append(ModelInfo(id=rel, type="unknown", loaded=False))
     return ModelListResponse(data=models)
 
 
@@ -686,11 +837,9 @@ async def unload_model(request: UnloadRequest):
 async def create_embeddings(request: EmbeddingRequest):
     t0 = time.time()
     inputs = request.input if isinstance(request.input, list) else [request.input]
-    tokens = sum(len(s) // 4 for s in inputs)
     try:
-        entry = _get_model(request.model, "embedding")
-        embeddings = entry.model.encode(inputs, convert_to_numpy=True, normalize_embeddings=True)
-        data = [EmbeddingData(embedding=emb.tolist(), index=i) for i, emb in enumerate(embeddings)]
+        embeddings, tokens = _encode_embeddings(request.model, inputs)
+        data = [EmbeddingData(embedding=emb, index=i) for i, emb in enumerate(embeddings)]
         _append_inference_log(
             event="embedding",
             model_id=request.model,
@@ -702,11 +851,89 @@ async def create_embeddings(request: EmbeddingRequest):
             usage={"prompt_tokens": tokens, "total_tokens": tokens},
         )
     except Exception as exc:
+        tokens = sum(len(s) // 4 for s in inputs)
         _append_inference_log(
             event="embedding",
             model_id=request.model,
             duration_ms=(time.time() - t0) * 1000.0,
             details={"inputs_count": len(inputs), "prompt_tokens": tokens, "status": "error", "error": str(exc)},
+            level="error",
+        )
+        raise
+
+
+@app.post("/v1/responses")
+@app.post("/responses")
+async def create_responses_embedding(request: ResponsesEmbeddingRequest):
+    t0 = time.time()
+    inputs = _normalize_response_input(request.input)
+    if not inputs:
+        raise HTTPException(
+            400,
+            "input must include text. Supported formats: string, list[string], or Responses API message input.",
+        )
+    try:
+        embeddings, tokens = _encode_embeddings(request.model, inputs)
+        _append_inference_log(
+            event="responses_embedding",
+            model_id=request.model,
+            duration_ms=(time.time() - t0) * 1000.0,
+            details={"inputs_count": len(inputs), "prompt_tokens": tokens, "status": "ok"},
+        )
+        return {
+            "id": f"resp_{uuid.uuid4().hex[:24]}",
+            "object": "response",
+            "created_at": int(time.time()),
+            "status": "completed",
+            "model": request.model,
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "Embedding generated successfully."}
+                    ],
+                }
+            ],
+            "output_text": "Embedding generated successfully.",
+            # Custom extension for embedding use-cases.
+            "data": [
+                {"object": "embedding", "embedding": emb, "index": i}
+                for i, emb in enumerate(embeddings)
+            ],
+            "usage": {"input_tokens": tokens, "output_tokens": 0, "total_tokens": tokens},
+        }
+    except Exception as exc:
+        _append_inference_log(
+            event="responses_embedding",
+            model_id=request.model,
+            duration_ms=(time.time() - t0) * 1000.0,
+            details={"inputs_count": len(inputs), "status": "error", "error": str(exc)},
+            level="error",
+        )
+        raise
+
+
+@app.post("/v1/chat/completions")
+@app.post("/chat/completions")
+async def create_chat_completions(request: ChatCompletionsRequest):
+    t0 = time.time()
+    payload = request.model_dump(exclude_none=True)
+    try:
+        status, data = await asyncio.to_thread(_proxy_chat_completions, payload)
+        _append_inference_log(
+            event="chat_completions",
+            model_id=request.model,
+            duration_ms=(time.time() - t0) * 1000.0,
+            details={"messages_count": len(request.messages), "status": "ok", "upstream_status": status},
+        )
+        return data
+    except HTTPException as exc:
+        _append_inference_log(
+            event="chat_completions",
+            model_id=request.model,
+            duration_ms=(time.time() - t0) * 1000.0,
+            details={"messages_count": len(request.messages), "status": "error", "error": str(exc.detail)},
             level="error",
         )
         raise

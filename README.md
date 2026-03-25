@@ -113,10 +113,9 @@ export SENTENCE_TRANSFORMER_KWARGS='{"model_kwargs":{"attn_implementation":"flas
 
 `/ui` で WebUI を開くと、次を操作できます。
 
-- カタログから `repo_id` を選択
-- `Hugging Face` からモデルをダウンロード開始
+- `Hugging Face` からモデルをダウンロード開始 (`repo_id` は手入力)
 - ダウンロード進捗 (`0-100%`, `MB/s`, `downloaded/total size`) の確認
-- ローカルモデル一覧の確認と `Load` / (ロード済みのみ) `Unload`
+- ローカルモデル一覧の確認と `Load` / (ロード済みのみ) `Unload`（一覧は `config.json` または `adapter_config.json` があるフォルダをモデルルートとして表示し、`.cache` 配下などは出しません）
 - ロード済みモデルのトップ表示
 - 推論ログ表示 (`embedding` / `rerank` 実行時)
 
@@ -139,16 +138,62 @@ http://localhost:7997/ui
 - `GET /v1/models/downloads/{job_id}`
 - `GET /v1/logs/inference?limit=30`
 - `GET /v1/models/catalog`
+- `POST /v1/responses` (OpenAI Responses API 互換サブセット)
+- `POST /v1/chat/completions` (OpenAI 互換, upstream proxy)
 
 `POST /v1/models/download` の例:
 
 ```bash
 curl -X POST http://localhost:7997/v1/models/download \
   -H "Content-Type: application/json" \
-  -d '{"repo_id":"Qwen/Qwen3-Embedding-4B","local_name":"Qwen3-Embedding-4B"}'
+  -d '{"repo_id":"Qwen/Qwen3-Embedding-4B","local_name":"embedding/Qwen3-Embedding-4B"}'
 ```
 
 `repo_id` は必ず `owner/repo` 形式です。`Qwen` のような namespace のみ指定は失敗します。
+
+`local_name` は `MODEL_DIR` からの相対パスです (区切りは `/`)。省略時は `repo_id` の末尾名のみの 1 段です。  
+Embedding / Rerank / 将来の LLM 用など、用途ごとに `embedding/...` や `reranker/ruri-v3-reranker-310m` のように階層を分けられます。  
+`..` や `MODEL_DIR` の外へ抜けるパスは拒否されます。
+
+ロードや推論で参照する `model` / `model_id` は、上記と同じ相対パス文字列に揃えてください。
+
+### `/v1/responses` 互換エンドポイント
+
+`9router` などで `responses` エンドポイントしか選べない場合向けに、  
+`POST /v1/responses` を追加しています。内部では embedding を実行し、  
+互換フィールド (`output_text`) と拡張フィールド (`data`) を返します。
+
+```bash
+curl -X POST http://localhost:7997/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{"model":"Qwen3-Embedding-0.6B","input":"test from responses api"}'
+```
+
+返却 JSON の `data` に embedding ベクトルが入ります。
+
+### `/v1/chat/completions` 互換エンドポイント
+
+将来 `GGUF` モデルを `llama.cpp` / `Ollama` など OpenAI 互換 API 経由で使うために、  
+`/v1/chat/completions` を upstream proxy として追加しています。
+
+設定 (`.env`):
+
+```text
+LLM_PROXY_BASE_URL=http://localhost:11434/v1
+LLM_PROXY_API_KEY=
+LLM_PROXY_TIMEOUT_SEC=120
+```
+
+呼び出し例:
+
+```bash
+curl -X POST http://localhost:7997/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model":"qwen2.5:7b",
+    "messages":[{"role":"user","content":"hello"}]
+  }'
+```
 
 ### Embedding 動作確認のコツ
 
