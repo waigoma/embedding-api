@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>embedding-api WebUI</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0d1117;
+      --panel: #161b22;
+      --line: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --ok: #3fb950;
+      --warn: #d29922;
+      --err: #f85149;
+      --btn: #238636;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    .wrap {
+      max-width: 980px;
+      margin: 24px auto 48px;
+      padding: 0 16px;
+      display: grid;
+      gap: 16px;
+    }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel);
+      padding: 14px;
+    }
+    h1 { margin: 0 0 8px; font-size: 20px; }
+    h2 { margin: 0 0 10px; font-size: 16px; }
+    .muted { color: var(--muted); }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; }
+    input, select, button {
+      border: 1px solid var(--line);
+      background: #0f141b;
+      color: var(--text);
+      padding: 8px 10px;
+      border-radius: 8px;
+      font-size: 14px;
+    }
+    input, select { min-width: 220px; }
+    button {
+      background: var(--btn);
+      border: none;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    button:hover { filter: brightness(1.1); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th, td {
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      padding: 8px 6px;
+      vertical-align: top;
+    }
+    .status-ok { color: var(--ok); }
+    .status-warn { color: var(--warn); }
+    .status-err { color: var(--err); }
+    code {
+      background: #0f141b;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 1px 5px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>embedding-api WebUI</h1>
+      <div class="muted">モデルのダウンロードと状態確認をブラウザから実行できます。</div>
+    </div>
+
+    <div class="card">
+      <h2>モデルをダウンロード (Hugging Face)</h2>
+      <div class="row">
+        <select id="catalogSelect"></select>
+        <input id="repoId" placeholder="repo_id (例: Qwen/Qwen3-Embedding-4B)" />
+        <input id="localName" placeholder="保存ディレクトリ名 (任意)" />
+        <label style="display:flex;align-items:center;gap:6px;">
+          <input id="force" type="checkbox" style="min-width:0;"> force
+        </label>
+        <button id="downloadBtn">ダウンロード開始</button>
+      </div>
+      <div id="downloadResult" class="muted" style="margin-top:8px;"></div>
+    </div>
+
+    <div class="card">
+      <h2>ダウンロードジョブ</h2>
+      <div class="row" style="margin-bottom:8px;">
+        <button id="refreshJobsBtn">更新</button>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>status</th>
+            <th>repo_id</th>
+            <th>local_name</th>
+            <th>error</th>
+          </tr>
+        </thead>
+        <tbody id="jobsBody"></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>ローカルモデル一覧</h2>
+      <div class="row" style="margin-bottom:8px;">
+        <button id="refreshModelsBtn">更新</button>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>id</th>
+            <th>type</th>
+            <th>loaded</th>
+          </tr>
+        </thead>
+        <tbody id="modelsBody"></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>サーバー状態</h2>
+      <div id="health" class="muted">loading...</div>
+    </div>
+  </div>
+
+  <script>
+    async function getJson(url) {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      return await res.json();
+    }
+
+    function statusClass(s) {
+      if (s === "completed") return "status-ok";
+      if (s === "failed") return "status-err";
+      return "status-warn";
+    }
+
+    async function loadCatalog() {
+      const select = document.getElementById("catalogSelect");
+      const data = await getJson("/v1/models/catalog");
+      select.innerHTML = "";
+      const initial = document.createElement("option");
+      initial.value = "";
+      initial.textContent = "カタログから選択 (任意)";
+      select.appendChild(initial);
+      for (const row of data.data || []) {
+        const id = row.repo_id || "";
+        const type = row.type || "unknown";
+        const opt = document.createElement("option");
+        opt.value = id;
+        opt.textContent = `${id} (${type})`;
+        select.appendChild(opt);
+      }
+      select.onchange = () => {
+        if (select.value) {
+          document.getElementById("repoId").value = select.value;
+        }
+      };
+    }
+
+    async function loadJobs() {
+      const body = document.getElementById("jobsBody");
+      const data = await getJson("/v1/models/downloads");
+      body.innerHTML = "";
+      for (const row of data.data || []) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td class="${statusClass(row.status)}">${row.status}</td>
+          <td><code>${row.repo_id || ""}</code></td>
+          <td><code>${row.local_name || ""}</code></td>
+          <td class="status-err">${row.error || ""}</td>
+        `;
+        body.appendChild(tr);
+      }
+    }
+
+    async function loadModels() {
+      const body = document.getElementById("modelsBody");
+      const data = await getJson("/v1/models");
+      body.innerHTML = "";
+      for (const row of data.data || []) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td><code>${row.id || ""}</code></td>
+          <td>${row.type || ""}</td>
+          <td>${row.loaded ? "yes" : "no"}</td>
+        `;
+        body.appendChild(tr);
+      }
+    }
+
+    async function loadHealth() {
+      const node = document.getElementById("health");
+      const h = await getJson("/health");
+      node.innerHTML = `
+        <div>device: <code>${h.device}</code> / backend: <code>${h.accelerator_backend}</code></div>
+        <div>mode: <code>${h.device_mode}</code>, auto_load: <code>${h.auto_load}</code></div>
+        <div>gpu: <code>${h.gpu ? h.gpu.name : "none"}</code></div>
+      `;
+    }
+
+    async function downloadModel() {
+      const repoId = document.getElementById("repoId").value.trim();
+      const localName = document.getElementById("localName").value.trim();
+      const force = document.getElementById("force").checked;
+      const out = document.getElementById("downloadResult");
+      if (!repoId) {
+        out.textContent = "repo_id を入力してください。";
+        return;
+      }
+      out.textContent = "リクエスト送信中...";
+      const payload = { repo_id: repoId, force };
+      if (localName) payload.local_name = localName;
+      const res = await fetch("/v1/models/download", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        out.textContent = `失敗: ${data.detail || res.statusText}`;
+      } else {
+        out.textContent = `ジョブ作成: ${data.id} (${data.status})`;
+      }
+      await loadJobs();
+      await loadModels();
+    }
+
+    async function bootstrap() {
+      await loadCatalog();
+      await loadJobs();
+      await loadModels();
+      await loadHealth();
+      document.getElementById("downloadBtn").onclick = downloadModel;
+      document.getElementById("refreshJobsBtn").onclick = loadJobs;
+      document.getElementById("refreshModelsBtn").onclick = loadModels;
+      setInterval(() => { loadJobs().catch(() => {}); }, 5000);
+    }
+
+    bootstrap().catch((e) => {
+      document.getElementById("downloadResult").textContent = `初期化エラー: ${e.message}`;
+    });
+  </script>
+</body>
+</html>

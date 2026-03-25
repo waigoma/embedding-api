@@ -1,6 +1,6 @@
 services:
   embedding:
-    image: local/embedding-server:latest
+    image: ${EMBEDDING_IMAGE:-local/embedding-server:latest}
     container_name: embedding
     restart: unless-stopped
     ports:
@@ -17,11 +17,10 @@ services:
       - IDLE_TTL=0
       # --- Model directory ---
       - MODEL_DIR=/models
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              capabilities: [gpu]
-              device_ids: ["all"]
+      # --- Device mode: auto|cpu|gpu|cuda ---
+      - DEVICE_MODE=${DEVICE_MODE:-auto}
+      # Optional JSON kwargs for SentenceTransformer/CrossEncoder.
+      # Example: {"model_kwargs":{"attn_implementation":"flash_attention_2","torch_dtype":"float16"}}
+      - SENTENCE_TRANSFORMER_KWARGS=${SENTENCE_TRANSFORMER_KWARGS:-}
+      - CROSS_ENCODER_KWARGS=${CROSS_ENCODER_KWARGS:-}
 

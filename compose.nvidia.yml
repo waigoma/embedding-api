@@ -1,0 +1,5 @@
+services:
+  embedding:
+    gpus: all
+    environment:
+      - DEVICE_MODE=${DEVICE_MODE:-gpu}

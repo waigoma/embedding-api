@@ -10,11 +10,14 @@ import os
 import time
 import threading
 import logging
-from typing import Optional
+import json
+import uuid
+from typing import Any, Optional
 
 import torch
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 logging.basicConfig(level=logging.INFO)
@@ -23,11 +26,84 @@ logger = logging.getLogger("embedding-server")
 app = FastAPI(title="Embedding Server", version="2.0.0")
 
 MODEL_DIR = os.environ.get("MODEL_DIR", "/models")
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+WEBUI_DIR = os.path.join(os.path.dirname(__file__), "webui")
+DEVICE_MODE = os.environ.get("DEVICE_MODE", "auto").strip().lower()
 IDLE_TTL = int(os.environ.get("IDLE_TTL", "0"))  # seconds, 0 = disabled
 AUTO_LOAD = os.environ.get("AUTO_LOAD", "1") == "1"
 PRELOAD_EMBEDDING = os.environ.get("PRELOAD_EMBEDDING", "").split(",")
 PRELOAD_RERANKER = os.environ.get("PRELOAD_RERANKER", "").split(",")
+SENTENCE_TRANSFORMER_KWARGS = os.environ.get("SENTENCE_TRANSFORMER_KWARGS", "").strip()
+CROSS_ENCODER_KWARGS = os.environ.get("CROSS_ENCODER_KWARGS", "").strip()
+MODEL_CATALOG_JSON = os.environ.get("MODEL_CATALOG_JSON", "").strip()
+
+
+def _parse_json_env(raw_value: str, env_name: str) -> dict:
+    if not raw_value:
+        return {}
+    try:
+        value = json.loads(raw_value)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"{env_name} must be valid JSON: {exc}") from exc
+    if not isinstance(value, dict):
+        raise RuntimeError(f"{env_name} must be a JSON object")
+    return value
+
+
+def _parse_json_list_env(raw_value: str, env_name: str) -> list[dict[str, Any]]:
+    if not raw_value:
+        return []
+    try:
+        value = json.loads(raw_value)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"{env_name} must be valid JSON: {exc}") from exc
+    if not isinstance(value, list):
+        raise RuntimeError(f"{env_name} must be a JSON array")
+    out: list[dict[str, Any]] = []
+    for row in value:
+        if not isinstance(row, dict):
+            raise RuntimeError(f"{env_name} must contain JSON objects only")
+        out.append(row)
+    return out
+
+
+def _detect_backend() -> str:
+    if not torch.cuda.is_available():
+        return "cpu"
+    if torch.version.hip:
+        return "rocm"
+    if torch.version.cuda:
+        return "cuda"
+    return "cuda-unknown"
+
+
+def _detect_device(mode: str) -> tuple[str, str]:
+    if mode == "cpu":
+        return "cpu", "cpu"
+    if mode in {"gpu", "cuda"}:
+        if not torch.cuda.is_available():
+            raise RuntimeError("DEVICE_MODE requests GPU but no CUDA/HIP device is available")
+        return "cuda", _detect_backend()
+    if mode == "auto":
+        if torch.cuda.is_available():
+            return "cuda", _detect_backend()
+        return "cpu", "cpu"
+    raise RuntimeError("DEVICE_MODE must be one of: auto, cpu, gpu, cuda")
+
+
+DEVICE, ACCELERATOR_BACKEND = _detect_device(DEVICE_MODE)
+EMBEDDING_KWARGS = _parse_json_env(SENTENCE_TRANSFORMER_KWARGS, "SENTENCE_TRANSFORMER_KWARGS")
+RERANKER_KWARGS = _parse_json_env(CROSS_ENCODER_KWARGS, "CROSS_ENCODER_KWARGS")
+MODEL_CATALOG = _parse_json_list_env(MODEL_CATALOG_JSON, "MODEL_CATALOG_JSON")
+
+if not MODEL_CATALOG:
+    MODEL_CATALOG = [
+        {"repo_id": "Qwen/Qwen3-Embedding-0.6B", "type": "embedding"},
+        {"repo_id": "Qwen/Qwen3-Embedding-4B", "type": "embedding"},
+        {"repo_id": "Qwen/Qwen3-Reranker-0.6B", "type": "reranker"},
+        {"repo_id": "Qwen/Qwen3-Reranker-4B", "type": "reranker"},
+        {"repo_id": "cl-nagoya/ruri-v3-310m", "type": "embedding"},
+        {"repo_id": "cl-nagoya/ruri-v3-reranker-310m", "type": "reranker"},
+    ]
 
 
 class ModelEntry:
@@ -43,6 +119,8 @@ class ModelEntry:
 # --- Registry ---
 registry: dict[str, ModelEntry] = {}
 registry_lock = threading.Lock()
+download_jobs: dict[str, dict[str, Any]] = {}
+download_lock = threading.Lock()
 
 
 def _resolve_path(model_id: str) -> str:
@@ -50,11 +128,64 @@ def _resolve_path(model_id: str) -> str:
     return local if os.path.isdir(local) else model_id
 
 
+def _default_local_name(repo_id: str) -> str:
+    return repo_id.rsplit("/", 1)[-1]
+
+
+def _sanitize_local_name(local_name: str) -> str:
+    cleaned = local_name.strip().replace("\\", "/")
+    if not cleaned:
+        raise HTTPException(400, "local_name is empty")
+    if "/" in cleaned or cleaned in {".", ".."}:
+        raise HTTPException(400, "local_name must be a single directory name")
+    return cleaned
+
+
+def _set_download_status(job_id: str, **updates: Any) -> None:
+    with download_lock:
+        job = download_jobs.get(job_id)
+        if not job:
+            return
+        job.update(updates)
+
+
+def _run_download_job(job_id: str, repo_id: str, target_dir: str) -> None:
+    try:
+        from huggingface_hub import snapshot_download
+    except Exception as exc:
+        _set_download_status(
+            job_id,
+            status="failed",
+            error=f"missing huggingface_hub: {exc}",
+            finished_at=time.time(),
+        )
+        return
+
+    _set_download_status(job_id, status="downloading", started_at=time.time())
+    try:
+        snapshot_download(
+            repo_id=repo_id,
+            local_dir=target_dir,
+            local_dir_use_symlinks=False,
+            resume_download=True,
+        )
+        _set_download_status(job_id, status="completed", finished_at=time.time())
+    except Exception as exc:
+        _set_download_status(
+            job_id,
+            status="failed",
+            error=str(exc),
+            finished_at=time.time(),
+        )
+
+
 def _load_embedding(model_id: str) -> ModelEntry:
     from sentence_transformers import SentenceTransformer
     path = _resolve_path(model_id)
     logger.info(f"Loading embedding: {model_id} from {path}")
-    model = SentenceTransformer(path, device=DEVICE)
+    kwargs = dict(EMBEDDING_KWARGS)
+    kwargs.setdefault("device", DEVICE)
+    model = SentenceTransformer(path, **kwargs)
     logger.info(f"Loaded embedding: {model_id} (dim={model.get_sentence_embedding_dimension()})")
     return ModelEntry(model, "embedding")
 
@@ -63,7 +194,9 @@ def _load_reranker(model_id: str) -> ModelEntry:
     from sentence_transformers import CrossEncoder
     path = _resolve_path(model_id)
     logger.info(f"Loading reranker: {model_id} from {path}")
-    model = CrossEncoder(path, device=DEVICE)
+    kwargs = dict(RERANKER_KWARGS)
+    kwargs.setdefault("device", DEVICE)
+    model = CrossEncoder(path, **kwargs)
     logger.info(f"Loaded reranker: {model_id}")
     return ModelEntry(model, "reranker")
 
@@ -120,10 +253,11 @@ def _idle_checker():
 
 @app.on_event("startup")
 async def startup():
-    logger.info(f"Device: {DEVICE}")
+    logger.info(f"Device mode: {DEVICE_MODE}")
+    logger.info(f"Device: {DEVICE}, backend: {ACCELERATOR_BACKEND}")
     if DEVICE == "cuda":
         logger.info(f"GPU: {torch.cuda.get_device_name(0)}")
-        mem = torch.cuda.get_device_properties(0).total_mem / 1024**3
+        mem = torch.cuda.get_device_properties(0).total_memory / 1024**3
         logger.info(f"VRAM: {mem:.1f} GB")
     logger.info(f"Model dir: {MODEL_DIR}")
     logger.info(f"Auto-load: {AUTO_LOAD}, Idle TTL: {IDLE_TTL}s")
@@ -195,6 +329,24 @@ class ModelListResponse(BaseModel):
     data: list[ModelInfo]
 
 
+class DownloadRequest(BaseModel):
+    repo_id: str
+    local_name: Optional[str] = None
+    force: bool = False
+
+
+class DownloadStatusResponse(BaseModel):
+    id: str
+    repo_id: str
+    local_name: str
+    target_dir: str
+    status: str
+    created_at: float
+    started_at: Optional[float] = None
+    finished_at: Optional[float] = None
+    error: Optional[str] = None
+
+
 # --- Management ---
 @app.get("/v1/models", response_model=ModelListResponse)
 @app.get("/models", response_model=ModelListResponse)
@@ -212,6 +364,81 @@ async def list_models():
             if os.path.isdir(os.path.join(MODEL_DIR, name)) and name not in loaded_ids:
                 models.append(ModelInfo(id=name, type="unknown", loaded=False))
     return ModelListResponse(data=models)
+
+
+@app.get("/ui")
+@app.get("/webui")
+async def webui():
+    index_html = os.path.join(WEBUI_DIR, "index.html")
+    if not os.path.isfile(index_html):
+        raise HTTPException(404, "webui not found")
+    return FileResponse(index_html, media_type="text/html")
+
+
+@app.get("/v1/models/catalog")
+@app.get("/models/catalog")
+async def model_catalog():
+    return {"object": "list", "data": MODEL_CATALOG}
+
+
+@app.post("/v1/models/download", response_model=DownloadStatusResponse)
+@app.post("/models/download", response_model=DownloadStatusResponse)
+async def download_model(request: DownloadRequest):
+    repo_id = request.repo_id.strip()
+    if not repo_id:
+        raise HTTPException(400, "repo_id is empty")
+
+    local_name = _sanitize_local_name(request.local_name or _default_local_name(repo_id))
+    target_dir = os.path.join(MODEL_DIR, local_name)
+    if os.path.exists(target_dir):
+        if not os.path.isdir(target_dir):
+            raise HTTPException(409, f"target exists but is not a directory: {local_name}")
+        if os.listdir(target_dir) and not request.force:
+            raise HTTPException(409, f"target already exists: {local_name} (set force=true)")
+
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    os.makedirs(target_dir, exist_ok=True)
+
+    job_id = str(uuid.uuid4())
+    job: dict[str, Any] = {
+        "id": job_id,
+        "repo_id": repo_id,
+        "local_name": local_name,
+        "target_dir": target_dir,
+        "status": "queued",
+        "created_at": time.time(),
+        "started_at": None,
+        "finished_at": None,
+        "error": None,
+    }
+    with download_lock:
+        download_jobs[job_id] = job
+
+    threading.Thread(
+        target=_run_download_job,
+        args=(job_id, repo_id, target_dir),
+        daemon=True,
+    ).start()
+    return DownloadStatusResponse(**job)
+
+
+@app.get("/v1/models/downloads")
+@app.get("/models/downloads")
+async def list_download_jobs():
+    with download_lock:
+        jobs = list(download_jobs.values())
+    jobs.sort(key=lambda x: x["created_at"], reverse=True)
+    return {"object": "list", "data": jobs}
+
+
+@app.get("/v1/models/downloads/{job_id}", response_model=DownloadStatusResponse)
+@app.get("/models/downloads/{job_id}", response_model=DownloadStatusResponse)
+async def get_download_job(job_id: str):
+    with download_lock:
+        job = download_jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, f"download job not found: {job_id}")
+    return DownloadStatusResponse(**job)
 
 
 @app.post("/v1/models/load")
@@ -292,6 +519,8 @@ async def health():
     return {
         "status": "ok",
         "device": DEVICE,
+        "accelerator_backend": ACCELERATOR_BACKEND,
+        "device_mode": DEVICE_MODE,
         "gpu": gpu,
         "idle_ttl": IDLE_TTL,
         "auto_load": AUTO_LOAD,

@@ -1,0 +1,14 @@
+services:
+  embedding:
+    group_add:
+      - video
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    ipc: host
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp=unconfined
+    environment:
+      - DEVICE_MODE=${DEVICE_MODE:-gpu}
