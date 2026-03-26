@@ -7,13 +7,13 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 WORKDIR /app
 
-COPY requirements.base.txt /app/requirements.base.txt
+COPY src/requirements.base.txt /app/requirements.base.txt
 
 RUN python3 -m pip install -r /app/requirements.base.txt
 
-COPY server.py /app/server.py
-COPY download_from_huggingface.py /app/download_from_huggingface.py
-COPY webui /app/webui
+COPY src/server.py /app/server.py
+COPY src/download_from_huggingface.py /app/download_from_huggingface.py
+COPY src/webui /app/webui
 
 EXPOSE 7997
 

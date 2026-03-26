@@ -1,6 +1,6 @@
 services:
   embedding:
-    image: ${EMBEDDING_IMAGE:-local/embedding-server:amd}
+    image: local/embedding-server:amd
     build:
       context: .
       dockerfile: Dockerfile.amd

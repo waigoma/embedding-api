@@ -1,6 +1,5 @@
 services:
   embedding:
-    image: ${EMBEDDING_IMAGE:-local/embedding-server:latest}
     container_name: embedding
     restart: unless-stopped
     ports:

@@ -26,3 +26,5 @@ temp/
 # Editor / OS
 .DS_Store
 Thumbs.db
+
+.claude/

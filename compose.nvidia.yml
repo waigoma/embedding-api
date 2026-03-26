@@ -1,5 +1,6 @@
 services:
   embedding:
+    image: ghcr.io/waigoma/embedding-api-nvidia:latest
     gpus: all
     environment:
       - DEVICE_MODE=${DEVICE_MODE:-gpu}

@@ -1,5 +1,6 @@
 services:
   embedding:
+    image: ghcr.io/waigoma/embedding-api-amd:latest
     group_add:
       - video
     devices:
