@@ -13,3 +13,4 @@ services:
       - seccomp=unconfined
     environment:
       - DEVICE_MODE=${DEVICE_MODE:-gpu}
+      - HSA_OVERRIDE_GFX_VERSION=11.0.0
