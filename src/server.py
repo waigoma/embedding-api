@@ -7,6 +7,7 @@ OpenAI-compatible Embedding & Reranking API Server
 """
 
 import os
+import gc
 import time
 import threading
 import logging
@@ -511,6 +512,8 @@ def _unload(model_id: str) -> bool:
     if entry is None:
         return False
     del entry.model
+    del entry
+    gc.collect()
     if DEVICE == "cuda":
         torch.cuda.empty_cache()
     logger.info(f"Unloaded: {model_id}")
