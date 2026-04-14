@@ -335,7 +335,10 @@ def _normalize_response_input(input_value: Any) -> list[str]:
 
 def _encode_embeddings(model_id: str, inputs: list[str]) -> tuple[list[list[float]], int]:
     entry = _get_model(model_id, "embedding")
-    vectors = entry.model.encode(inputs, convert_to_numpy=True, normalize_embeddings=True)
+    encode_kwargs: dict[str, Any] = {"convert_to_numpy": True, "normalize_embeddings": True}
+    if "query" in getattr(entry.model, "prompts", {}):
+        encode_kwargs["prompt_name"] = "query"
+    vectors = entry.model.encode(inputs, **encode_kwargs)
     embeddings = [vec.tolist() for vec in vectors]
     tokens = sum(len(s) // 4 for s in inputs)
     return embeddings, tokens
