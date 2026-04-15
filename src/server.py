@@ -15,10 +15,12 @@ import json
 import uuid
 import traceback
 import asyncio
+import base64
+import struct
 import urllib.request
 import urllib.error
 from contextlib import asynccontextmanager
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 import torch
 import uvicorn
@@ -594,13 +596,20 @@ app = FastAPI(title="Embedding Server", version="2.0.0", lifespan=lifespan)
 
 # --- Schemas ---
 class EmbeddingRequest(BaseModel):
-    input: str | list[str]
     model: str
-    encoding_format: Optional[str] = "float"
+    input: str | list[str]
+    encoding_format: Literal["float", "base64"] = "float"
+
+
+def _format_embedding_output(vec: list[float], fmt: Literal["float", "base64"]) -> list[float] | str:
+    if fmt == "base64":
+        return base64.b64encode(struct.pack(f"<{len(vec)}f", *vec)).decode("ascii")
+    return vec
+
 
 class EmbeddingData(BaseModel):
     object: str = "embedding"
-    embedding: list[float]
+    embedding: list[float] | str
     index: int
 
 class EmbeddingResponse(BaseModel):
@@ -845,7 +854,11 @@ async def create_embeddings(request: EmbeddingRequest):
     inputs = request.input if isinstance(request.input, list) else [request.input]
     try:
         embeddings, tokens = _encode_embeddings(request.model, inputs)
-        data = [EmbeddingData(embedding=emb, index=i) for i, emb in enumerate(embeddings)]
+        fmt = request.encoding_format
+        data = [
+            EmbeddingData(embedding=_format_embedding_output(emb, fmt), index=i)
+            for i, emb in enumerate(embeddings)
+        ]
         _append_inference_log(
             event="embedding",
             model_id=request.model,
