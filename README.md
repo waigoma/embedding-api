@@ -218,3 +218,30 @@ curl -X POST http://localhost:7997/v1/embeddings \
   -H "Content-Type: application/json; charset=utf-8" \
   --data-binary @payload.json
 ```
+
+### `dimensions` (出力次元の切り詰め)
+
+`dimensions` パラメータで出力ベクトルの次元数を指定できます。
+
+```bash
+curl -X POST http://localhost:7997/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{"model":"Qwen3-Embedding-0.6B","input":"test","dimensions":512}'
+```
+
+- 未指定時はモデルの標準次元数をそのまま返します
+- 指定時は先頭 `dimensions` 要素へ切り詰めます
+- `SentenceTransformer.encode()` が `truncate_dim` をサポートしている場合はそちらを使用し、未対応の場合はベクトルを Python でスライスします
+- 指定可能範囲: `1 <= dimensions <= model.get_sentence_embedding_dimension()`
+- 範囲外の場合は `400` エラー
+
+> **品質保証の注意**: 切り詰め後も高品質なベクトルが得られるのは **Matryoshka Representation Learning (MRL)** 対応モデルに限ります (例: `Qwen3-Embedding-0.6B`, `Qwen3-Embedding-4B`)。
+> 非 MRL モデルでは単純な先頭切り詰めになるため品質劣化が大きくなる場合があります。
+
+`encoding_format: "base64"` との併用も可能です。
+
+```bash
+curl -X POST http://localhost:7997/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{"model":"Qwen3-Embedding-0.6B","input":"test","dimensions":256,"encoding_format":"base64"}'
+```

@@ -335,13 +335,37 @@ def _normalize_response_input(input_value: Any) -> list[str]:
     return []
 
 
-def _encode_embeddings(model_id: str, inputs: list[str]) -> tuple[list[list[float]], int]:
+def _encode_embeddings(
+    model_id: str,
+    inputs: list[str],
+    dimensions: Optional[int] = None,
+) -> tuple[list[list[float]], int]:
     entry = _get_model(model_id, "embedding")
+
+    if dimensions is not None:
+        max_dim = entry.model.get_sentence_embedding_dimension()
+        if not (1 <= dimensions <= max_dim):
+            raise HTTPException(
+                400,
+                f"dimensions must be between 1 and {max_dim} (model embedding dimension), got {dimensions}",
+            )
+
     encode_kwargs: dict[str, Any] = {"convert_to_numpy": True, "normalize_embeddings": True}
     if "query" in getattr(entry.model, "prompts", {}):
         encode_kwargs["prompt_name"] = "query"
-    vectors = entry.model.encode(inputs, **encode_kwargs)
-    embeddings = [vec.tolist() for vec in vectors]
+
+    if dimensions is not None:
+        try:
+            vectors = entry.model.encode(inputs, truncate_dim=dimensions, **encode_kwargs)
+            embeddings = [vec.tolist() for vec in vectors]
+        except TypeError:
+            # truncate_dim not supported by this version; slice after encoding
+            vectors = entry.model.encode(inputs, **encode_kwargs)
+            embeddings = [vec[:dimensions].tolist() for vec in vectors]
+    else:
+        vectors = entry.model.encode(inputs, **encode_kwargs)
+        embeddings = [vec.tolist() for vec in vectors]
+
     tokens = sum(len(s) // 4 for s in inputs)
     return embeddings, tokens
 
@@ -599,6 +623,7 @@ class EmbeddingRequest(BaseModel):
     model: str
     input: str | list[str]
     encoding_format: Literal["float", "base64"] = "float"
+    dimensions: Optional[int] = None
 
 
 def _format_embedding_output(vec: list[float], fmt: Literal["float", "base64"]) -> list[float] | str:
@@ -853,17 +878,24 @@ async def create_embeddings(request: EmbeddingRequest):
     t0 = time.time()
     inputs = request.input if isinstance(request.input, list) else [request.input]
     try:
-        embeddings, tokens = _encode_embeddings(request.model, inputs)
+        embeddings, tokens = _encode_embeddings(request.model, inputs, request.dimensions)
         fmt = request.encoding_format
         data = [
             EmbeddingData(embedding=_format_embedding_output(emb, fmt), index=i)
             for i, emb in enumerate(embeddings)
         ]
+        dimensions_actual = len(embeddings[0]) if embeddings else 0
         _append_inference_log(
             event="embedding",
             model_id=request.model,
             duration_ms=(time.time() - t0) * 1000.0,
-            details={"inputs_count": len(inputs), "prompt_tokens": tokens, "status": "ok"},
+            details={
+                "inputs_count": len(inputs),
+                "prompt_tokens": tokens,
+                "status": "ok",
+                "dimensions": request.dimensions,
+                "dimensions_actual": dimensions_actual,
+            },
         )
         return EmbeddingResponse(
             data=data, model=request.model,
@@ -875,7 +907,13 @@ async def create_embeddings(request: EmbeddingRequest):
             event="embedding",
             model_id=request.model,
             duration_ms=(time.time() - t0) * 1000.0,
-            details={"inputs_count": len(inputs), "prompt_tokens": tokens, "status": "error", "error": str(exc)},
+            details={
+                "inputs_count": len(inputs),
+                "prompt_tokens": tokens,
+                "status": "error",
+                "error": str(exc),
+                "dimensions": request.dimensions,
+            },
             level="error",
         )
         raise
