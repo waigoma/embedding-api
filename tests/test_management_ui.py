@@ -1,5 +1,6 @@
 """UI contracts: reads do not load models, evidence resets, clients keep their payloads."""
 import json
+import threading
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -142,7 +143,8 @@ def test_rerank_contract_and_evidence(client, path):
 
 @pytest.mark.parametrize("path", ["/v1/models/download", "/models/download"])
 def test_download_validation_and_existing_job_payload(client, tmp_path, monkeypatch, path):
-    worker = MagicMock()
+    started = threading.Event()
+    worker = MagicMock(side_effect=lambda *_: started.set())
     monkeypatch.setattr(server, "_run_download_job", worker)
     assert client.post(path, json={"repo_id": "invalid"}).status_code == 400
     assert client.post(path, json={"repo_id": "synthetic/model", "local_name": "../outside"}).status_code == 400
@@ -155,6 +157,7 @@ def test_download_validation_and_existing_job_payload(client, tmp_path, monkeypa
     assert body["repo_id"] == "synthetic/model"
     assert (tmp_path / "embedding" / "synthetic").is_dir()
     assert len(server.download_jobs) == 1
+    assert started.wait(1)
     worker.assert_called_once()
     assert client.get(f'/v1/models/downloads/{body["id"]}').json()["status"] == "queued"
 
@@ -166,3 +169,55 @@ def test_inference_error_does_not_mark_success(client):
     assert client.post("/v1/embeddings", json={"model": "synthetic", "input": "synthetic"}).status_code == 500
     assert loaded.last_inference_at is None
     assert client.get("/v1/logs/inference").json()["data"][0]["details"]["status"] == "error"
+
+
+def test_repeated_load_is_idempotent_and_unload_is_explicit(client, monkeypatch):
+    loader = MagicMock(side_effect=lambda _: entry())
+    monkeypatch.setattr(server, "_load_embedding", loader)
+    payload = {"model_id": "synthetic", "model_type": "embedding"}
+    assert client.post("/v1/models/load", json=payload).json()["status"] == "loaded"
+    assert client.post("/models/load", json=payload).json()["status"] == "already_loaded"
+    loader.assert_called_once_with("synthetic")
+    assert client.post("/v1/models/unload", json=payload).json()["status"] == "unloaded"
+    assert client.post("/models/unload", json=payload).status_code == 404
+    assert client.get("/ui/status").json()["loaded"] == []
+
+
+def test_load_failure_and_invalid_type_preserve_registry(client, monkeypatch):
+    loader = MagicMock(side_effect=RuntimeError("synthetic load failure"))
+    monkeypatch.setattr(server, "_load_embedding", loader)
+    assert client.post("/models/load", json={"model_id": "synthetic", "model_type": "unsupported"}).status_code == 400
+    loader.assert_not_called()
+    assert client.post("/models/load", json={"model_id": "synthetic"}).status_code == 500
+    assert server.registry == {}
+    assert client.get("/health").json()["loaded"] == {}
+
+
+def test_existing_download_conflict_creates_no_job_or_worker(client, tmp_path, monkeypatch):
+    local = tmp_path / "synthetic"
+    local.mkdir()
+    (local / "config.json").write_text('{}')
+    worker = MagicMock()
+    monkeypatch.setattr(server, "_run_download_job", worker)
+    response = client.post("/v1/models/download", json={"repo_id": "synthetic/model", "local_name": "synthetic"})
+    assert response.status_code == 409
+    assert "force=true" in response.json()["detail"]
+    assert server.download_jobs == {}
+    worker.assert_not_called()
+
+
+def test_failed_job_reads_preserve_unknown_progress_and_error(client):
+    server.download_jobs["synthetic"] = {
+        "id": "synthetic", "repo_id": "synthetic/model", "local_name": "synthetic",
+        "target_dir": "/synthetic", "status": "failed", "created_at": 1,
+        "progress_percent": None, "total_bytes": None, "error": "synthetic timeout",
+        "logs": [{"message": "retry required"}],
+    }
+    job = client.get("/models/downloads/synthetic").json()
+    assert job["status"] == "failed"
+    assert job["progress_percent"] is None
+    assert job["total_bytes"] is None
+    assert job["error"] == "synthetic timeout"
+    assert job["last_log"]["message"] == "retry required"
+    assert "logs" not in job
+    assert client.get("/v1/models/downloads/missing").status_code == 404

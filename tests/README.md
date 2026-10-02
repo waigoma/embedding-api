@@ -19,11 +19,13 @@ modules, and needs no build or external fonts/scripts.
 
 ## CPU tests
 
-Use an environment with FastAPI, uvicorn, httpx, pytest and numpy. Inference
+Use Python 3.13 with the pinned CPU test dependencies: Inference
 runtimes and torch are replaced in tests; HTTP/framework behavior is real.
 No model is downloaded.
 
 ```sh
+python -m pip install -r tests/requirements.txt
+npm ci --ignore-scripts --no-audit --no-fund
 python -m pytest tests -q
 npm test
 ```
@@ -35,13 +37,16 @@ synthetic vectors and simulated resources. They do **not** validate model
 compatibility, real GPU inference, weight integrity or production proxy/TLS.
 
 ```sh
-python tests/serve_ui_fixture.py
-# In a separate terminal (the fixture only listens on loopback):
-PLAYWRIGHT_MODULE=/path/to/playwright \
-CHROMIUM_PATH=/path/to/chrome \
-UI_ARTIFACT_DIR=/tmp/embedding-ui-evidence \
-node tests/test_ui_browser.cjs
+npx --no-install playwright install --with-deps chromium
+npm run test:browser
 ```
+
+The browser harness starts/stops its own loopback fixture, refuses an occupied
+port, runs the desktop/mobile scenario and six isolated interaction regressions.
+Use PLAYWRIGHT_MODULE / CHROMIUM_PATH for an existing local installation and
+UI_ARTIFACT_DIR to select a screenshot directory. The regressions cover repeated
+cancel/Escape, double confirmation, read failure after a successful write, load
+failure/retry, duplicate Playground submissions and coalesced refresh requests.
 
 The fixture stubs both loaders and download workers, and must never be used as
 a production entrypoint. The browser writes screenshots and `browser-qa.json`.
@@ -66,6 +71,14 @@ The UI never claims those files are verified weights. A failed job blocks its
 local model's UI load until retried successfully. Same-name catalog candidates
 without provenance are labelled explicitly.
 
-No PR verification workflow existed at the baseline. The existing main/tag
-Docker publishing workflow is preserved, and this change adds no paid runner.
-Run the commands above locally or on an existing self-hosted runner.
+The CPU and UI tests workflow runs on pull requests, main updates and manual
+dispatch. It checks out the exact PR head, uses pinned CPU/Playwright dependencies,
+and has a 12-minute job limit with cancellation of superseded runs. No inference
+runtime, model weights or production credentials are used.
+
+This personal repository is public. Runner enumeration returned a permission
+error, so no usable self-hosted runner was verified. Its existing Docker workflow
+already uses ubuntu-latest; standard hosted runner minutes are free for public
+repositories ([GitHub billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions)).
+The test workflow creates no caches or uploaded artifacts, and records evidence
+in logs/the job summary. The existing Docker publishing workflow is preserved.

@@ -1,0 +1,6 @@
+# CPU HTTP/fixture tests only; production inference dependencies are unchanged.
+fastapi==0.140.0
+uvicorn==0.51.0
+httpx==0.28.1
+pytest==9.1.1
+numpy==2.5.1

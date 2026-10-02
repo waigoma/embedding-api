@@ -22,6 +22,8 @@ torch = MagicMock()
 torch.cuda.is_available.return_value = False
 sys.modules["torch"] = torch
 import server
+local_model_ids = server._iter_local_model_relative_ids
+catalog = list(server.MODEL_CATALOG)
 
 
 def fake_entry(model_type="embedding"):
@@ -37,6 +39,8 @@ def fake_entry(model_type="embedding"):
 
 
 def setup():
+    server._iter_local_model_relative_ids = local_model_ids
+    server.MODEL_CATALOG = list(catalog)
     server.registry.clear()
     server.download_jobs.clear()
     server.inference_logs.clear()

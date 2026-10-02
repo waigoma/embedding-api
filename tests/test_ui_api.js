@@ -40,3 +40,32 @@ test('aborted reads are ignored instead of producing a stale snapshot', async ()
   globalThis.fetch = async (_url, init) => { if (init.signal.aborted) throw new DOMException('aborted', 'AbortError'); };
   await assert.rejects(snapshot(controller.signal), {name: 'AbortError'});
 });
+
+test('a pending read abort propagates without retrying or affecting the next request', async () => {
+  let calls = 0;
+  const controller = new AbortController();
+  globalThis.fetch = async (_url, init) => {
+    calls++;
+    if (calls > 1) return new Response('{"status":"ok"}');
+    return new Promise((_resolve, reject) => init.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), {once:true}));
+  };
+  const pending = request('health', {signal:controller.signal});
+  controller.abort();
+  await assert.rejects(pending, {name:'AbortError'});
+  assert.deepEqual(await request('health'), {status:'ok'});
+  assert.equal(calls, 2);
+});
+
+test('POST timeout reports uncertain completion and never automatically retries', async () => {
+  const originalTimer = globalThis.setTimeout;
+  let calls = 0;
+  globalThis.setTimeout = callback => { queueMicrotask(callback); return 0; };
+  globalThis.fetch = async (_url, init) => {
+    calls++;
+    return new Promise((_resolve, reject) => init.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), {once:true}));
+  };
+  try {
+    await assert.rejects(request('v1/models/load', {body:{model_id:'synthetic'}}), /処理が継続している可能性/);
+    assert.equal(calls, 1);
+  } finally { globalThis.setTimeout = originalTimer; }
+});
