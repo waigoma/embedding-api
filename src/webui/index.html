@@ -1,367 +1,67 @@
 <!doctype html>
 <html lang="ja">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>embedding-api WebUI</title>
-  <style>
-    :root {
-      color-scheme: dark;
-      --bg: #0d1117;
-      --panel: #161b22;
-      --line: #30363d;
-      --text: #e6edf3;
-      --muted: #8b949e;
-      --ok: #3fb950;
-      --warn: #d29922;
-      --err: #f85149;
-      --btn: #238636;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      background: var(--bg);
-      color: var(--text);
-      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-    }
-    .wrap {
-      max-width: 980px;
-      margin: 24px auto 48px;
-      padding: 0 16px;
-      display: grid;
-      gap: 16px;
-    }
-    .card {
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: var(--panel);
-      padding: 14px;
-    }
-    h1 { margin: 0 0 8px; font-size: 20px; }
-    h2 { margin: 0 0 10px; font-size: 16px; }
-    .muted { color: var(--muted); }
-    .row { display: flex; gap: 8px; flex-wrap: wrap; }
-    input, select, button {
-      border: 1px solid var(--line);
-      background: #0f141b;
-      color: var(--text);
-      padding: 8px 10px;
-      border-radius: 8px;
-      font-size: 14px;
-    }
-    input, select { min-width: 220px; }
-    button {
-      background: var(--btn);
-      border: none;
-      cursor: pointer;
-      font-weight: 600;
-    }
-    button:hover { filter: brightness(1.1); }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 13px;
-    }
-    th, td {
-      border-bottom: 1px solid var(--line);
-      text-align: left;
-      padding: 8px 6px;
-      vertical-align: top;
-    }
-    .status-ok { color: var(--ok); }
-    .status-warn { color: var(--warn); }
-    .status-err { color: var(--err); }
-    code {
-      background: #0f141b;
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 1px 5px;
-    }
-  </style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Embedding API · 管理</title>
+  <link rel="stylesheet" href="ui/assets/admin.css">
+  <script type="module" src="ui/assets/admin.js"></script>
 </head>
 <body>
-  <div class="wrap">
-    <div class="card">
-      <h1>embedding-api WebUI</h1>
-      <div class="muted">モデルのダウンロードと状態確認をブラウザから実行できます。</div>
-    </div>
-
-    <div class="card">
-      <h2>現在ロード中のモデル</h2>
-      <div id="loadedTop" class="muted">loading...</div>
-    </div>
-
-    <div class="card">
-      <h2>モデルをダウンロード (Hugging Face)</h2>
-      <div class="row">
-        <input id="repoId" placeholder="repo_id (例: Qwen/Qwen3-Embedding-4B)" />
-        <input id="localName" placeholder="MODEL_DIR 下の相対パス (例: embedding/Qwen3-0.6B)" style="min-width:280px;" />
-        <label style="display:flex;align-items:center;gap:6px;">
-          <input id="force" type="checkbox" style="min-width:0;"> force
-        </label>
-        <button id="downloadBtn">ダウンロード開始</button>
-      </div>
-      <div class="muted" style="margin-top:6px;">※ repo_id は必ず <code>owner/repo</code> 形式。保存先は省略時はリポ名の末尾のみ。階層は <code>embedding/…</code> や <code>reranker/…</code> など <code>MODEL_DIR</code> からの相対パスで指定できます。</div>
-      <div id="downloadResult" class="muted" style="margin-top:8px;"></div>
-    </div>
-
-    <div class="card">
-      <h2>ダウンロードジョブ</h2>
-      <div class="row" style="margin-bottom:8px;">
-        <button id="refreshJobsBtn">更新</button>
-      </div>
-      <table>
-        <thead>
-          <tr>
-            <th>status</th>
-            <th>repo_id</th>
-            <th>local_name</th>
-            <th>progress</th>
-            <th>speed</th>
-            <th>size</th>
-            <th>error</th>
-          </tr>
-        </thead>
-        <tbody id="jobsBody"></tbody>
-      </table>
-    </div>
-
-    <div class="card">
-      <h2>直近の推論ログ (Embedding / Rerank)</h2>
-      <div class="row" style="margin-bottom:8px;">
-        <button id="refreshInferenceLogsBtn">更新</button>
-      </div>
-      <div id="inferenceLogsBox" class="muted">読み込み中...</div>
-    </div>
-
-    <div class="card">
-      <h2>ローカルモデル一覧</h2>
-      <div class="row" style="margin-bottom:8px;">
-        <button id="refreshModelsBtn">更新</button>
-      </div>
-      <table>
-        <thead>
-          <tr>
-            <th>id</th>
-            <th>type</th>
-            <th>loaded</th>
-            <th>actions</th>
-          </tr>
-        </thead>
-        <tbody id="modelsBody"></tbody>
-      </table>
-    </div>
-
-    <div class="card">
-      <h2>サーバー状態</h2>
-      <div id="health" class="muted">loading...</div>
-    </div>
+  <a class="skip-link" href="#main">メインへ移動</a>
+  <header class="header"><span class="brand-icon" aria-hidden="true">◈</span><strong>Embedding API</strong><span class="header-label">管理コンソール</span><span id="connection" class="badge">接続中…</span></header>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="section-label">WORKSPACE</div>
+      <nav aria-label="管理メニュー">
+        <button class="nav-item active" data-page="models" aria-current="page"><span aria-hidden="true">◈</span>モデル<span id="model-count" class="nav-count">—</span></button>
+        <button class="nav-item" data-page="catalog"><span aria-hidden="true">↓</span>カタログ・取得</button>
+        <button class="nav-item" data-page="playground"><span aria-hidden="true">▷</span>Playground</button>
+        <button class="nav-item" data-page="activity"><span aria-hidden="true">≋</span>推論ログ</button>
+        <button class="nav-item" data-page="settings"><span aria-hidden="true">⚙</span>稼働設定</button>
+      </nav>
+      <div class="sidebar-footer"><span class="status-dot" aria-hidden="true"></span>OpenAI compatible<br><code>/v1/embeddings</code></div>
+    </aside>
+    <main id="main" tabindex="-1">
+      <div class="page-heading"><div><p class="eyebrow">EMBEDDING & RERANKING</p><h1 id="page-title">モデル</h1><p id="page-description" class="muted">ローカルモデルと現在の稼働状態を管理します。</p></div><button id="refresh" class="btn">状態を更新</button></div>
+      <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+      <div id="error" class="notice error" role="alert" hidden></div>
+      <div id="initial" class="empty">サーバー状態を読み込んでいます…</div>
+      <section id="page-models" class="page" aria-label="モデル" hidden>
+        <div id="runtime" class="metrics"></div>
+        <div class="panel"><div class="panel-heading"><div><h2>ローカルモデル</h2><p class="muted">取得・ロード・推論確認は別の状態です。ロードはメモリを使用します。</p></div><label class="search-label">モデルを検索<input id="model-search" type="search" placeholder="モデル ID を検索"></label></div><div id="models" class="model-list"></div></div>
+      </section>
+      <section id="page-catalog" class="page" aria-label="カタログ・取得" hidden>
+        <div class="callout">ファイルの取得だけでは実行を保証しません。依存ライブラリ・モデル形式・メモリの確認と、ロード後の推論テストが必要です。</div>
+        <div class="panel-heading"><h2>モデルカタログ</h2><span class="muted">サーバーの設定に基づく一覧</span></div><div id="catalog" class="catalog-grid"></div>
+        <details class="panel advanced"><summary>Hugging Face から取得先を指定</summary>
+          <form id="download-form" class="form-grid">
+            <label>リポジトリ ID<input id="repo-id" required placeholder="owner/repo" autocomplete="off" aria-describedby="download-help"></label>
+            <label>保存先（相対パス）<input id="local-name" placeholder="省略時はリポジトリ名" autocomplete="off" aria-describedby="download-help"></label>
+            <label class="check"><input id="force" type="checkbox">既存ディレクトリへの再取得を許可</label>
+            <p id="download-help" class="muted full">MODEL_DIR 配下に保存します。絶対パス・「.」「..」は使えません。モデルの容量と利用条件を確認してください。</p>
+            <p id="download-validation" class="field-error full" role="alert"></p><div class="full"><button class="btn primary" type="submit">ダウンロード開始</button></div>
+          </form>
+        </details>
+        <div class="panel"><div class="panel-heading"><h2>ダウンロードジョブ</h2><span class="muted">直近 20 件 · 約 5 秒ごとに更新</span></div><div id="jobs" class="job-list"></div></div>
+      </section>
+      <section id="page-playground" class="page" aria-label="Playground" hidden>
+        <div class="panel"><h2>Embeddings を試す</h2><p class="muted">ロード済みの embedding モデルで、2 つのテキストのベクトルと類似度を確認します。入力はこのサーバーへ送信されます。</p>
+          <form id="test-form" class="form-grid">
+            <label>ロード済みモデル<select id="test-model" required></select></label>
+            <label>出力次元（任意）<input id="dimensions" type="number" min="1" step="1" placeholder="モデルの標準次元" aria-describedby="dimension-help"></label>
+            <p id="dimension-help" class="muted full">次元の上限はモデルごとに異なります。切り詰めによる品質はモデルの MRL 対応に依存します。</p>
+            <label>テキスト A<textarea id="text-a" required maxlength="2000" rows="4">猫は窓辺で眠っています。</textarea></label>
+            <label>テキスト B<textarea id="text-b" required maxlength="2000" rows="4">窓のそばで猫が寝ています。</textarea></label>
+            <p id="test-validation" class="field-error full" role="alert"></p><div class="full"><button id="test-button" class="btn primary" type="submit">ベクトルを生成</button><span class="muted inline-help">各 2,000 文字まで</span></div>
+          </form>
+        </div><div id="test-result" aria-live="polite"></div>
+      </section>
+      <section id="page-activity" class="page" aria-label="推論ログ" hidden><div class="panel"><div class="panel-heading"><h2>直近の推論</h2><span class="muted">現在のプロセス · 最大 50 件</span></div><div id="activity"></div></div></section>
+      <section id="page-settings" class="page" aria-label="稼働設定" hidden><div class="callout">現在のプロセスが使用する設定です。変更はサービスの起動設定で行い、再起動後に反映します。</div><div class="panel"><h2>実行環境</h2><dl id="settings" class="settings-list"></dl></div><div class="panel"><h2>API 接続</h2><p class="muted">既存クライアントは同じエンドポイントを利用できます。</p><dl class="settings-list"><dt>Embeddings</dt><dd><code>POST /v1/embeddings</code></dd><dt>Reranking</dt><dd><code>POST /v1/rerank</code></dd><dt>モデル一覧</dt><dd><code>GET /v1/models</code></dd></dl></div></section>
+      <footer class="main-footer"><span id="updated">未取得</span><span>状態の確認でモデルはロードされません</span></footer>
+    </main>
   </div>
-
-  <script>
-    async function getJson(url) {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-      return await res.json();
-    }
-
-    function statusClass(s) {
-      if (s === "completed") return "status-ok";
-      if (s === "failed") return "status-err";
-      return "status-warn";
-    }
-
-    function formatBytes(bytes) {
-      if (bytes === null || bytes === undefined || Number.isNaN(bytes)) return "-";
-      const units = ["B", "KB", "MB", "GB", "TB"];
-      let n = Number(bytes);
-      let i = 0;
-      while (n >= 1024 && i < units.length - 1) {
-        n /= 1024;
-        i += 1;
-      }
-      return `${n.toFixed(i === 0 ? 0 : 2)} ${units[i]}`;
-    }
-
-    async function loadJobs() {
-      const body = document.getElementById("jobsBody");
-      const data = await getJson("/v1/models/downloads");
-      body.innerHTML = "";
-      for (const row of data.data || []) {
-        const tr = document.createElement("tr");
-        const progress = row.progress_percent === null || row.progress_percent === undefined
-          ? "-"
-          : `${row.progress_percent.toFixed(2)}%`;
-        const speed = row.speed_mbps === null || row.speed_mbps === undefined
-          ? "-"
-          : `${row.speed_mbps.toFixed(2)} MB/s`;
-        const size = `${formatBytes(row.downloaded_bytes)} / ${formatBytes(row.total_bytes)}`;
-        tr.innerHTML = `
-          <td class="${statusClass(row.status)}">${row.status}</td>
-          <td><code>${row.repo_id || ""}</code></td>
-          <td><code>${row.local_name || ""}</code></td>
-          <td>${progress}</td>
-          <td>${speed}</td>
-          <td>${size}</td>
-          <td class="status-err">${row.error || ""}</td>
-        `;
-        body.appendChild(tr);
-      }
-    }
-
-    async function loadInferenceLogs() {
-      const box = document.getElementById("inferenceLogsBox");
-      const data = await getJson("/v1/logs/inference?limit=30");
-      const logs = data.data || [];
-      if (logs.length === 0) {
-        box.textContent = "推論ログはまだありません。";
-        return;
-      }
-      box.innerHTML = logs.map((row) => {
-        const t = new Date((row.timestamp || 0) * 1000).toLocaleString();
-        const d = row.details || {};
-        const speed = row.duration_ms !== undefined ? `${row.duration_ms} ms` : "-";
-        const status = d.status || row.level || "info";
-        return `<div>[${t}] <code>${row.event || "inference"}</code> <code>${row.model || "-"}</code> status=${status} duration=${speed}</div>`;
-      }).join("");
-    }
-
-    async function loadModelById(modelId, modelType) {
-      const res = await fetch("/v1/models/load", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model_id: modelId, model_type: modelType }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || res.statusText);
-      return data;
-    }
-
-    async function unloadModelById(modelId) {
-      const res = await fetch("/v1/models/unload", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model_id: modelId }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || res.statusText);
-      return data;
-    }
-
-    async function loadModels() {
-      const body = document.getElementById("modelsBody");
-      const data = await getJson("/v1/models");
-      body.innerHTML = "";
-      for (const row of data.data || []) {
-        const tr = document.createElement("tr");
-        const loadType = row.type === "reranker" ? "reranker" : "embedding";
-        const actionHtml = row.loaded
-          ? `<button data-action="unload" data-model-id="${row.id}">Unload</button>`
-          : `<button data-action="load" data-model-id="${row.id}" data-model-type="${loadType}">Load</button>`;
-        tr.innerHTML = `
-          <td><code>${row.id || ""}</code></td>
-          <td>${row.type || ""}</td>
-          <td>${row.loaded ? "yes" : "no"}</td>
-          <td>${actionHtml}</td>
-        `;
-        body.appendChild(tr);
-      }
-      for (const btn of body.querySelectorAll("button[data-action='load']")) {
-        btn.onclick = async () => {
-          try {
-            await loadModelById(btn.dataset.modelId, btn.dataset.modelType);
-            await loadModels();
-            await loadHealth();
-          } catch (e) {
-            alert(`Load failed: ${e.message}`);
-          }
-        };
-      }
-      for (const btn of body.querySelectorAll("button[data-action='unload']")) {
-        btn.onclick = async () => {
-          try {
-            await unloadModelById(btn.dataset.modelId);
-            await loadModels();
-            await loadHealth();
-          } catch (e) {
-            alert(`Unload failed: ${e.message}`);
-          }
-        };
-      }
-    }
-
-    async function loadHealth() {
-      const node = document.getElementById("health");
-      const loadedTop = document.getElementById("loadedTop");
-      const h = await getJson("/health");
-      const loaded = h.loaded || {};
-      const loadedEntries = Object.entries(loaded);
-      if (loadedEntries.length === 0) {
-        loadedTop.innerHTML = "<span class='muted'>ロード済みモデルはありません。</span>";
-      } else {
-        loadedTop.innerHTML = loadedEntries
-          .map(([k, v]) => `<div><code>${k}</code> <span class="muted">(${v})</span></div>`)
-          .join("");
-      }
-      node.innerHTML = `
-        <div>device: <code>${h.device}</code> / backend: <code>${h.accelerator_backend}</code></div>
-        <div>mode: <code>${h.device_mode}</code>, auto_load: <code>${h.auto_load}</code></div>
-        <div>gpu: <code>${h.gpu ? h.gpu.name : "none"}</code></div>
-        <div>vram: <code>${h.gpu ? `${h.gpu.vram_used_mb} / ${h.gpu.vram_total_mb} MB (free: ${h.gpu.vram_free_mb} MB)` : "n/a"}</code></div>
-      `;
-    }
-
-    async function downloadModel() {
-      const repoId = document.getElementById("repoId").value.trim();
-      const localName = document.getElementById("localName").value.trim();
-      const force = document.getElementById("force").checked;
-      const out = document.getElementById("downloadResult");
-      if (!repoId) {
-        out.textContent = "repo_id を入力してください。";
-        return;
-      }
-      if (!repoId.includes("/") || repoId.split("/").length !== 2) {
-        out.textContent = "repo_id は owner/repo 形式で入力してください (例: Qwen/Qwen3-Embedding-0.6B)。";
-        return;
-      }
-      out.textContent = "リクエスト送信中...";
-      const payload = { repo_id: repoId, force };
-      if (localName) payload.local_name = localName;
-      const res = await fetch("/v1/models/download", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        out.textContent = `失敗: ${data.detail || res.statusText}`;
-      } else {
-        out.textContent = `ジョブ作成: ${data.id} (${data.status})`;
-      }
-      await loadJobs();
-      await loadModels();
-    }
-
-    async function bootstrap() {
-      await loadJobs();
-      await loadModels();
-      await loadHealth();
-      await loadInferenceLogs();
-      document.getElementById("downloadBtn").onclick = downloadModel;
-      document.getElementById("refreshJobsBtn").onclick = loadJobs;
-      document.getElementById("refreshModelsBtn").onclick = loadModels;
-      document.getElementById("refreshInferenceLogsBtn").onclick = () => loadInferenceLogs().catch((e) => {
-        document.getElementById("inferenceLogsBox").textContent = `ログ取得失敗: ${e.message}`;
-      });
-      setInterval(() => {
-        loadJobs().catch(() => {});
-        loadInferenceLogs().catch(() => {});
-      }, 5000);
-    }
-
-    bootstrap().catch((e) => {
-      document.getElementById("downloadResult").textContent = `初期化エラー: ${e.message}`;
-    });
-  </script>
+  <dialog id="confirm-dialog" aria-labelledby="confirm-title"><form method="dialog"><h2 id="confirm-title">操作の確認</h2><p id="confirm-message"></p><div class="dialog-actions"><button class="btn" value="cancel">キャンセル</button><button id="confirm-action" class="btn primary" value="confirm">実行</button></div></form></dialog>
 </body>
 </html>

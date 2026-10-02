@@ -1,0 +1,60 @@
+name: CPU and UI tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regression:
+    # Standard hosted minutes are free for this public repository. No caches or
+    # uploaded artifacts are created; logs and the job summary retain evidence.
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install CPU test dependencies
+        run: python -m pip install --disable-pip-version-check -r tests/requirements.txt
+      - name: Install pinned browser tooling
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npx --no-install playwright install --with-deps chromium
+      - name: Python API regression tests
+        run: python -m pytest tests -q
+      - name: JavaScript API and state tests
+        run: npm test
+      - name: Desktop, mobile and repeated-interaction tests
+        run: npm run test:browser
+      - name: Verification summary
+        if: always()
+        env:
+          TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          {
+            echo "Tested commit: $TESTED_SHA"
+            echo
+            echo "CPU contracts and synthetic loopback UI only. No model downloads or production inference."
+            if test -f artifacts/browser-qa.json; then
+              echo
+              echo '```json'
+              cat artifacts/browser-qa.json
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

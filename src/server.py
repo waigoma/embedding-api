@@ -124,6 +124,11 @@ class ModelEntry:
         self.model = model
         self.model_type = model_type
         self.last_used = time.time()
+        self.last_inference_at: Optional[float] = None
+
+    def mark_inference(self):
+        """成功した推論の時刻を現ロードに記録する。アンロード後は引き継がない。"""
+        self.last_inference_at = time.time()
 
     def touch(self):
         self.last_used = time.time()
@@ -366,6 +371,8 @@ def _encode_embeddings(
         vectors = entry.model.encode(inputs, **encode_kwargs)
         embeddings = [vec.tolist() for vec in vectors]
 
+    if embeddings:
+        entry.mark_inference()
     tokens = sum(len(s) // 4 for s in inputs)
     return embeddings, tokens
 
@@ -750,6 +757,44 @@ async def webui():
     return FileResponse(index_html, media_type="text/html")
 
 
+_WEBUI_ASSETS = frozenset({"admin.css", "admin.js", "api.js", "state.js", "view.js"})
+
+
+@app.get("/ui/assets/{asset_name}")
+async def webui_asset(asset_name: str):
+    """UI の allowlist asset のみ配信し、不明なファイル名は 404 とする。"""
+    if asset_name not in _WEBUI_ASSETS:
+        raise HTTPException(404, "asset not found")
+    return FileResponse(
+        os.path.join(WEBUI_DIR, asset_name),
+        media_type="text/css" if asset_name.endswith(".css") else "text/javascript",
+        headers={"Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"},
+    )
+
+
+@app.get("/ui/status")
+async def webui_status():
+    """モデルをロードせず、現ロードの推論記録と非機密の起動設定を返す。"""
+    with registry_lock:
+        loaded = [
+            {"id": mid, "type": entry.model_type,
+             "last_inference_at": entry.last_inference_at}
+            for mid, entry in registry.items()
+        ]
+    return {
+        "loaded": loaded,
+        "config": {
+            "model_dir": MODEL_DIR,
+            "device_mode": DEVICE_MODE,
+            "auto_load": AUTO_LOAD,
+            "idle_ttl": IDLE_TTL,
+            "preload_embedding": [m.strip() for m in PRELOAD_EMBEDDING if m.strip()],
+            "preload_reranker": [m.strip() for m in PRELOAD_RERANKER if m.strip()],
+            "chat_proxy_configured": bool(LLM_PROXY_BASE_URL),
+        },
+    }
+
+
 @app.get("/v1/models/catalog")
 @app.get("/models/catalog")
 async def model_catalog():
@@ -1005,6 +1050,8 @@ async def rerank(request: RerankRequest):
         entry = _get_model(request.model, "reranker")
         pairs = [[request.query, doc] for doc in request.documents]
         scores = entry.model.predict(pairs).tolist()
+        if scores:
+            entry.mark_inference()
         results = [
             RerankResult(
                 index=i, relevance_score=float(s),
