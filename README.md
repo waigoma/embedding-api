@@ -245,3 +245,22 @@ curl -X POST http://localhost:7997/v1/embeddings \
   -H "Content-Type: application/json" \
   -d '{"model":"Qwen3-Embedding-0.6B","input":"test","dimensions":256,"encoding_format":"base64"}'
 ```
+
+### 管理 UI
+
+`/ui` または `/webui` から、モデル・カタログと取得ジョブ・Playground・
+推論ログ・稼働設定を確認できます。外部 CDN やフロントエンドのビルドは不要です。
+`src/webui/` の HTML / CSS / JS を一緒に配布してください。
+
+- ローカルの config 検出、ロード済み、現ロードでの推論確認を別々に表示します。
+  ローカル検出や取得完了だけでは、重みの完全性・互換性・実行可能性を保証しません。
+- カタログの取得、ロード、アンロードは確認ダイアログから明示的に実行します。
+  再取得は既存ファイルを使います。GPU メモリ表示は全プロセスの合計です。
+- Playground はロード済み embedding モデルのみ選択でき、各 2,000 文字以内の
+  2 テキストでベクトルの先頭要素・次元・cosine similarity を表示します。
+  テキストはこのサーバーに送信します。既存 AUTO_LOAD 設定は変更しません。
+- 稼働設定は閲覧のみです。設定変更は従来どおりサービスの起動設定で行います。
+- `GET /ui/status` は非機密の起動設定と現ロードの推論時刻を返します。
+  `/v1/*` と既存の別名エンドポイント・レスポンスは維持しています。
+
+検証手順と実モデル未検証の範囲は [tests/README.md](tests/README.md) に記載しています。
