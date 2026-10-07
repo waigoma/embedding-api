@@ -13,7 +13,6 @@ import threading
 import logging
 import json
 import uuid
-import traceback
 import asyncio
 import base64
 import struct
@@ -25,18 +24,16 @@ from typing import Any, Literal, Optional
 import torch
 import uvicorn
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("embedding-server")
 
 MODEL_DIR = os.environ.get("MODEL_DIR", "/models")
-WEBUI_DIR = os.path.join(os.path.dirname(__file__), "webui")
 DEVICE_MODE = os.environ.get("DEVICE_MODE", "auto").strip().lower()
 HF_TOKEN = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
 DOWNLOAD_PROGRESS_INTERVAL_SEC = float(os.environ.get("DOWNLOAD_PROGRESS_INTERVAL_SEC", "1.0"))
-DOWNLOAD_MAX_LOGS = int(os.environ.get("DOWNLOAD_MAX_LOGS", "200"))
 INFERENCE_MAX_LOGS = int(os.environ.get("INFERENCE_MAX_LOGS", "300"))
 LLM_PROXY_BASE_URL = os.environ.get("LLM_PROXY_BASE_URL", "").strip().rstrip("/")
 LLM_PROXY_API_KEY = os.environ.get("LLM_PROXY_API_KEY", "").strip()
@@ -132,8 +129,6 @@ class ModelEntry:
 # --- Registry ---
 registry: dict[str, ModelEntry] = {}
 registry_lock = threading.Lock()
-download_jobs: dict[str, dict[str, Any]] = {}
-download_lock = threading.Lock()
 inference_logs: list[dict[str, Any]] = []
 inference_lock = threading.Lock()
 
@@ -193,92 +188,6 @@ def _resolve_path(model_id: str) -> str:
     if os.path.isdir(stripped):
         return stripped
     return stripped
-
-
-def _default_local_name(repo_id: str) -> str:
-    return repo_id.rsplit("/", 1)[-1]
-
-
-def _sanitize_local_name(local_name: str) -> str:
-    """Relative path under MODEL_DIR, e.g. embedding/Qwen3-Embedding-0.6B or reranker/ruri-v3-reranker-310m."""
-    cleaned = local_name.strip().replace("\\", "/").strip("/")
-    if not cleaned:
-        raise HTTPException(400, "local_name is empty")
-    parts = [p for p in cleaned.split("/") if p]
-    for p in parts:
-        if p in (".", ".."):
-            raise HTTPException(400, "local_name must not contain '.' or '..' segments")
-    rel = "/".join(parts)
-    base = os.path.abspath(MODEL_DIR)
-    candidate = os.path.abspath(os.path.join(MODEL_DIR, *parts))
-    if candidate != base and not candidate.startswith(base + os.sep):
-        raise HTTPException(400, "local_name must stay under MODEL_DIR")
-    return rel
-
-
-def _set_download_status(job_id: str, **updates: Any) -> None:
-    with download_lock:
-        job = download_jobs.get(job_id)
-        if not job:
-            return
-        job.update(updates)
-
-
-def _append_download_log(job_id: str, level: str, message: str) -> None:
-    event = {
-        "timestamp": time.time(),
-        "level": level,
-        "message": message,
-    }
-    with download_lock:
-        job = download_jobs.get(job_id)
-        if not job:
-            return
-        logs = job.setdefault("logs", [])
-        logs.append(event)
-        if len(logs) > DOWNLOAD_MAX_LOGS:
-            del logs[: len(logs) - DOWNLOAD_MAX_LOGS]
-        job["updated_at"] = event["timestamp"]
-
-
-def _dir_size_bytes(path: str) -> int:
-    total = 0
-    if not os.path.exists(path):
-        return 0
-    for root, _, files in os.walk(path):
-        for name in files:
-            fp = os.path.join(root, name)
-            try:
-                total += os.path.getsize(fp)
-            except OSError:
-                pass
-    return total
-
-
-def _estimate_repo_size(repo_id: str) -> Optional[int]:
-    try:
-        from huggingface_hub import HfApi
-
-        info = HfApi(token=HF_TOKEN).model_info(repo_id, files_metadata=True)
-        total = 0
-        found = False
-        for sibling in info.siblings or []:
-            size = getattr(sibling, "size", None)
-            if isinstance(size, int) and size > 0:
-                total += size
-                found = True
-        return total if found else None
-    except Exception:
-        return None
-
-
-def _serialize_download_job(job: dict[str, Any], include_logs: bool = False) -> dict[str, Any]:
-    payload = {k: v for k, v in job.items() if k != "logs"}
-    payload["logs_count"] = len(job.get("logs", []))
-    payload["last_log"] = job.get("logs", [])[-1] if job.get("logs") else None
-    if include_logs:
-        payload["logs"] = list(job.get("logs", []))
-    return payload
 
 
 def _append_inference_log(
@@ -400,119 +309,6 @@ def _proxy_chat_completions(payload: dict[str, Any]) -> tuple[int, dict[str, Any
         raise HTTPException(502, f"failed to reach chat backend: {exc}") from exc
 
 
-def _run_download_job(job_id: str, repo_id: str, target_dir: str) -> None:
-    try:
-        from huggingface_hub import snapshot_download
-    except Exception as exc:
-        _set_download_status(
-            job_id,
-            status="failed",
-            error=f"missing huggingface_hub: {exc}",
-            finished_at=time.time(),
-        )
-        return
-
-    total_bytes = _estimate_repo_size(repo_id)
-    _set_download_status(job_id, total_bytes=total_bytes)
-    if total_bytes:
-        _append_download_log(job_id, "info", f"estimated total size: {total_bytes} bytes")
-    else:
-        _append_download_log(job_id, "info", "total size estimate unavailable")
-
-    result: dict[str, Any] = {}
-    start_wall = time.time()
-    start_size = _dir_size_bytes(target_dir)
-
-    def _download_worker():
-        try:
-            snapshot_download(
-                repo_id=repo_id,
-                local_dir=target_dir,
-                local_dir_use_symlinks=False,
-                resume_download=True,
-                token=HF_TOKEN,
-            )
-            result["ok"] = True
-        except Exception as exc:
-            result["error"] = exc
-            result["traceback"] = traceback.format_exc()
-
-    worker = threading.Thread(target=_download_worker, daemon=True)
-    _set_download_status(job_id, status="downloading", started_at=time.time())
-    _append_download_log(job_id, "info", f"download started: {repo_id} -> {target_dir}")
-    worker.start()
-
-    last_t = start_wall
-    last_size = start_size
-    interval = max(0.2, DOWNLOAD_PROGRESS_INTERVAL_SEC)
-    while worker.is_alive():
-        time.sleep(interval)
-        now = time.time()
-        current_size = _dir_size_bytes(target_dir)
-        downloaded = max(0, current_size - start_size)
-        elapsed = max(1e-6, now - start_wall)
-        speed_bps = max(0.0, (current_size - last_size) / max(1e-6, now - last_t))
-        speed_mbps = speed_bps / (1024 * 1024)
-        progress_percent = None
-        eta_seconds = None
-        if total_bytes and total_bytes > 0:
-            progress_percent = min(100.0, (downloaded / total_bytes) * 100.0)
-            if speed_bps > 1:
-                remain = max(0, total_bytes - downloaded)
-                eta_seconds = remain / speed_bps
-        _set_download_status(
-            job_id,
-            updated_at=now,
-            downloaded_bytes=downloaded,
-            speed_mbps=round(speed_mbps, 2),
-            elapsed_seconds=round(elapsed, 2),
-            progress_percent=round(progress_percent, 2) if progress_percent is not None else None,
-            eta_seconds=round(eta_seconds, 1) if eta_seconds is not None else None,
-        )
-        last_t = now
-        last_size = current_size
-
-    worker.join()
-    finished = time.time()
-    final_size = _dir_size_bytes(target_dir)
-    downloaded_final = max(0, final_size - start_size)
-
-    if result.get("ok"):
-        _set_download_status(
-            job_id,
-            status="completed",
-            finished_at=finished,
-            updated_at=finished,
-            downloaded_bytes=downloaded_final,
-            speed_mbps=0.0,
-            progress_percent=100.0 if total_bytes else None,
-            eta_seconds=0.0 if total_bytes else None,
-        )
-        _append_download_log(job_id, "info", f"download completed: {repo_id}")
-        return
-
-    exc = result.get("error")
-    msg = str(exc) if exc else "unknown download error"
-    hint = ""
-    lower = msg.lower()
-    if "401" in msg or "403" in msg or "gated" in lower:
-        hint = " (set HF_TOKEN for private/gated models)"
-    if "timeout" in lower:
-        _append_download_log(job_id, "error", "timeout detected during model download")
-    _append_download_log(job_id, "error", msg)
-    if result.get("traceback"):
-        _append_download_log(job_id, "error", result["traceback"])
-    _set_download_status(
-        job_id,
-        status="failed",
-        error=f"{msg}{hint}",
-        finished_at=finished,
-        updated_at=finished,
-        downloaded_bytes=downloaded_final,
-        speed_mbps=0.0,
-    )
-
-
 def _load_embedding(model_id: str) -> ModelEntry:
     from sentence_transformers import SentenceTransformer
     path = _resolve_path(model_id)
@@ -612,7 +408,12 @@ def _startup_once():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _startup_once()
-    yield
+    hub = app.state.admin_event_hub
+    await hub.start()
+    try:
+        yield
+    finally:
+        await hub.stop()
 
 
 app = FastAPI(title="Embedding Server", version="2.0.0", lifespan=lifespan)
@@ -744,10 +545,8 @@ async def list_models():
 @app.get("/ui")
 @app.get("/webui")
 async def webui():
-    index_html = os.path.join(WEBUI_DIR, "index.html")
-    if not os.path.isfile(index_html):
-        raise HTTPException(404, "webui not found")
-    return FileResponse(index_html, media_type="text/html")
+    """Legacy URL: the admin shell now lives at /admin/ui."""
+    return RedirectResponse(url="/admin/ui", status_code=307)
 
 
 @app.get("/v1/models/catalog")
@@ -759,81 +558,42 @@ async def model_catalog():
 @app.post("/v1/models/download", response_model=DownloadStatusResponse)
 @app.post("/models/download", response_model=DownloadStatusResponse)
 async def download_model(request: DownloadRequest):
-    repo_id = request.repo_id.strip()
-    if not repo_id:
-        raise HTTPException(400, "repo_id is empty")
-    if repo_id.count("/") != 1:
-        raise HTTPException(
-            400,
-            "repo_id must be in 'owner/repo' format (e.g. Qwen/Qwen3-Embedding-0.6B)",
-        )
-
-    local_name = _sanitize_local_name(request.local_name or _default_local_name(repo_id))
-    target_dir = os.path.join(MODEL_DIR, local_name)
-    if os.path.exists(target_dir):
-        if not os.path.isdir(target_dir):
-            raise HTTPException(409, f"target exists but is not a directory: {local_name}")
-        if os.listdir(target_dir) and not request.force:
-            raise HTTPException(409, f"target already exists: {local_name} (set force=true)")
+    from admin_shell.admin.download_jobs import TooManyDownloads
+    from admin_shell.admin.model_catalog import InvalidLocalName, InvalidRepoId, TargetExists
 
     try:
         os.makedirs(MODEL_DIR, exist_ok=True)
-        os.makedirs(target_dir, exist_ok=True)
+        job = app.state.model_catalog.start_download(request.repo_id, request.local_name, request.force)
+    except (InvalidRepoId, InvalidLocalName) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except TargetExists as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except TooManyDownloads as exc:
+        raise HTTPException(429, str(exc)) from exc
     except OSError as exc:
         raise HTTPException(
             500,
             f"failed to prepare model directory: {exc}. "
             "Check if MODEL_DIR is mounted writable (remove ':ro' from volume mount).",
         ) from exc
-
-    job_id = str(uuid.uuid4())
-    job: dict[str, Any] = {
-        "id": job_id,
-        "repo_id": repo_id,
-        "local_name": local_name,
-        "target_dir": target_dir,
-        "status": "queued",
-        "created_at": time.time(),
-        "updated_at": time.time(),
-        "started_at": None,
-        "finished_at": None,
-        "elapsed_seconds": 0.0,
-        "progress_percent": 0.0,
-        "total_bytes": None,
-        "downloaded_bytes": 0,
-        "speed_mbps": 0.0,
-        "eta_seconds": None,
-        "logs": [],
-        "error": None,
-    }
-    with download_lock:
-        download_jobs[job_id] = job
-
-    threading.Thread(
-        target=_run_download_job,
-        args=(job_id, repo_id, target_dir),
-        daemon=True,
-    ).start()
-    return DownloadStatusResponse(**_serialize_download_job(job))
+    return DownloadStatusResponse(**job)
 
 
 @app.get("/v1/models/downloads")
 @app.get("/models/downloads")
 async def list_download_jobs():
-    with download_lock:
-        jobs = [_serialize_download_job(job) for job in download_jobs.values()]
-    jobs.sort(key=lambda x: x["created_at"], reverse=True)
-    return {"object": "list", "data": jobs}
+    return {"object": "list", "data": app.state.model_catalog.list_downloads()}
 
 
 @app.get("/v1/models/downloads/{job_id}", response_model=DownloadStatusResponse)
 @app.get("/models/downloads/{job_id}", response_model=DownloadStatusResponse)
 async def get_download_job(job_id: str):
-    with download_lock:
-        job = download_jobs.get(job_id)
-    if not job:
-        raise HTTPException(404, f"download job not found: {job_id}")
-    return DownloadStatusResponse(**_serialize_download_job(job))
+    from admin_shell.admin.download_jobs import JobNotFound
+
+    try:
+        return DownloadStatusResponse(**app.state.model_catalog.get_download(job_id))
+    except JobNotFound as exc:
+        raise HTTPException(404, str(exc)) from exc
 
 
 @app.get("/v1/logs/inference")
@@ -1057,6 +817,28 @@ async def health():
         "auto_load": AUTO_LOAD,
         "loaded": {k: v.model_type for k, v in registry.items()},
     }
+
+
+def _load_for_admin(model_id: str, model_type: str) -> ModelEntry:
+    loader = _load_reranker if model_type == "reranker" else _load_embedding
+    return loader(model_id)
+
+
+from embedding_admin import build_admin  # noqa: E402  (needs the app and globals above)
+
+build_admin(
+    app,
+    model_dir=MODEL_DIR,
+    registry=registry,
+    registry_lock=registry_lock,
+    loader=_load_for_admin,
+    unloader=_unload,
+    inference_logs=inference_logs,
+    inference_lock=inference_lock,
+    health=health,
+    hf_token=HF_TOKEN,
+    download_poll_interval=DOWNLOAD_PROGRESS_INTERVAL_SEC,
+)
 
 
 if __name__ == "__main__":

@@ -109,26 +109,27 @@ SentenceTransformer に渡すオプションは JSON で指定できます。
 export SENTENCE_TRANSFORMER_KWARGS='{"model_kwargs":{"attn_implementation":"flash_attention_2","torch_dtype":"float16"}}'
 ```
 
-## WebUI (モデル DL 管理)
+## Admin UI (モデル DL 管理)
 
-`/ui` で WebUI を開くと、次を操作できます。
+`/admin/ui` で admin UI を開くと、次を操作できます (`/ui`, `/webui` は `/admin/ui` へリダイレクトします)。
+tts-gateway / stt-gateway と同じ共有 shell (`fastapi-admin-ui-template`) で、Models 画面の列と操作は三サービスで揃えています。
 
-- `Hugging Face` からモデルをダウンロード開始 (`repo_id` は手入力)
-- ダウンロード進捗 (`0-100%`, `MB/s`, `downloaded/total size`) の確認
-- ローカルモデル一覧の確認と `Load` / (ロード済みのみ) `Unload`（一覧は `config.json` または `adapter_config.json` があるフォルダをモデルルートとして表示し、`.cache` 配下などは出しません）
-- ロード済みモデルのトップ表示
-- 推論ログ表示 (`embedding` / `rerank` 実行時)
+- **Models**: `MODEL_DIR` 配下のローカルモデル一覧 (`config.json` または `adapter_config.json` があるフォルダがモデルルート。`.cache` 配下などは出しません) と、ダウンロードジョブの進捗 (`%`, `MB/s`, `downloaded/total`) を 1 つの表で表示。`type` 列は `config.json` の `architectures` から推定 (`*ForSequenceClassification` → reranker)
+- 同じ画面から `Hugging Face` のダウンロード開始 (`repo_id` は手入力、`local_name` は `MODEL_DIR` からの相対パス) と、ローカルモデルの `Load` / (ロード済みのみ) `Unload`
+- **Inference Logs**: 推論ログ (`embedding` / `rerank` 実行時)
+- **Server Health**: device / backend / VRAM / ロード済みモデル
 
-`/v1/models/download` は `download_from_huggingface.py` を直接実行する方式ではなく、  
-`server.py` 内の `huggingface_hub.snapshot_download()` をバックグラウンドジョブで実行します。
+進捗と一覧は `/admin/events` の SSE で届き、切れている間は 5 秒間隔の polling に落ちます。
+admin UI は `/v1/*` と同じく認証なしで公開されます (信頼できるネットワーク内での利用を前提)。
 
+`/v1/models/download` は `server.py` 内の `huggingface_hub.snapshot_download()` をバックグラウンドジョブで実行します。
 そのため、モデルを保存する `/models` は書き込み可能である必要があります (`:rw`)。
 private / gated model を落とす場合は `HF_TOKEN` を設定してください。
 
 ### 起動後に開く URL
 
 ```text
-http://localhost:7997/ui
+http://localhost:7997/admin/ui
 ```
 
 ### モデル DL API
@@ -138,6 +139,8 @@ http://localhost:7997/ui
 - `GET /v1/models/downloads/{job_id}`
 - `GET /v1/logs/inference?limit=30`
 - `GET /v1/models/catalog`
+- `GET /admin/models` (ローカル + ジョブの併合一覧、admin UI 用)
+- `POST /admin/models/{local_name}/load` / `/unload`
 - `POST /v1/responses` (OpenAI Responses API 互換サブセット)
 - `POST /v1/chat/completions` (OpenAI 互換, upstream proxy)
 
