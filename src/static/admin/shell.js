@@ -96,7 +96,11 @@ const router = createHistoryRouter({
   isKnown: target => {
     const screen = registry.find(entry => entry.id === target.id);
     if (!screen) return false;
-    if (target.itemId != null) return Boolean(screen.mountItem) && (!screen.items || screen.items(ctx).some(item => item.id === target.itemId));
+    if (target.itemId != null) {
+      if (!screen.mountItem) return false;
+      if (screen.knownItem) return screen.knownItem(target.itemId, ctx);
+      return !screen.items || screen.items(ctx).some(item => item.id === target.itemId);
+    }
     return !screen.items;
   },
   onNavigate: (target, mode) => { void navigate(target, mode); },

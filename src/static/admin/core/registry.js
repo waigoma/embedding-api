@@ -2,10 +2,11 @@
  * A screen is { id, section, label, mount(panel, ctx), unmount() } plus optional
  * items(ctx) / mountItem(panel, ctx, itemId) for sidebar-listed entities,
  * sidebar(ctx) -> { before: Node[], after: Node[] } for extra sidebar controls,
- * and init(ctx) run once at boot (e.g. to load the list behind items()).
+ * init(ctx) run once at boot (e.g. to load the list behind items()), and
+ * knownItem(id, ctx) when deep links may name items that items() does not list.
  */
 const REQUIRED = ['id', 'section', 'label', 'mount', 'unmount'];
-const OPTIONAL_FUNCTIONS = ['items', 'mountItem', 'sidebar', 'init'];
+const OPTIONAL_FUNCTIONS = ['items', 'mountItem', 'sidebar', 'init', 'knownItem'];
 
 export function defineScreen(definition) {
   for (const key of REQUIRED) {

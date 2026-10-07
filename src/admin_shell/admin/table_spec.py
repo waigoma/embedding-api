@@ -20,7 +20,8 @@ CELL_KINDS = frozenset(
         "actions",
     }
 )
-# installed: on disk. queued/downloading/cancelling: active job. completed/cancelled/failed/interrupted: finished job.
+# installed: on disk. queued / downloading / cancelling: active job.
+# completed / cancelled / failed / interrupted: finished job.
 MODEL_STATUSES = frozenset(
     {
         "installed",

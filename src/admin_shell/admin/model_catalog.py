@@ -120,7 +120,7 @@ class CatalogListing:
     capabilities: ModelCatalogCapabilities
     columns: list[ColumnSpec]
     items: list[dict[str, JsonValue]]
-    download_fields: list[dict[str, JsonValue]] = field(default_factory=list)
+    download_fields: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, JsonValue]:
         return {
@@ -173,7 +173,7 @@ class ModelCatalogService:
         jobs: JobLedger | None = None,
         load_state: LoadStateProvider | None = None,
         targets: TargetDirectory | None = None,
-        download_fields: list[dict[str, JsonValue]] | None = None,
+        download_fields: list[dict[str, Any]] | None = None,
     ) -> None:
         if capabilities.download and (jobs is None or not hasattr(jobs, "start")):
             raise ValueError("download capability requires a JobLedger with start()")
@@ -243,9 +243,10 @@ class ModelCatalogService:
         unknown = set(extra or {}) - allowed
         if unknown:
             raise InvalidDownloadField(f"unknown download fields: {sorted(unknown)}")
-        return self._jobs.start(  # type: ignore[attr-defined]
-            repo, validate_local_name(name), target, extra=dict(extra or {})
-        )
+        start = getattr(self._jobs, "start", None)
+        if start is None:
+            raise CapabilityUnsupported("the job ledger cannot start downloads")
+        return start(repo, validate_local_name(name), target, extra=dict(extra or {}))
 
     def get_download(self, job_id: str) -> dict[str, Any]:
         if not self._capabilities.download or self._jobs is None:
@@ -258,7 +259,10 @@ class ModelCatalogService:
     def cancel_download(self, job_id: str) -> dict[str, Any]:
         if not self._capabilities.cancel or self._jobs is None:
             raise CapabilityUnsupported("this service does not cancel downloads")
-        return self._jobs.cancel(job_id)  # type: ignore[attr-defined]
+        cancel = getattr(self._jobs, "cancel", None)
+        if cancel is None:
+            raise CapabilityUnsupported("the job ledger cannot cancel downloads")
+        return cancel(job_id)
 
     # ----- load state -----
 

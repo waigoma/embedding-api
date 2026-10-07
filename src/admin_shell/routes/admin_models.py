@@ -13,8 +13,8 @@ from ..admin.download_jobs import JobNotFound, TooManyDownloads
 from ..admin.model_catalog import (
     CapabilityUnsupported,
     CatalogError,
-    InvalidLocalName,
     InvalidDownloadField,
+    InvalidLocalName,
     InvalidRepoId,
     JobNotCancellable,
     ModelCatalogService,
