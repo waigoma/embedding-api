@@ -33,8 +33,7 @@ def main():
                     log.seek(0)
                     raise RuntimeError(f"Fixture failed to start:\n{log.read()}")
                 time.sleep(0.1)
-            subprocess.run(["node", "tests/test_ui_browser.cjs"], cwd=ROOT, env=environment, check=True, timeout=120)
-            subprocess.run(["node", "--test", "tests/test_ui_interactions.cjs"], cwd=ROOT, env=environment, check=True, timeout=120)
+            subprocess.run(["node", "tests/test_admin_browser.cjs"], cwd=ROOT, env=environment, check=True, timeout=120)
         finally:
             fixture.terminate()
             try:

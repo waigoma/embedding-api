@@ -1,27 +1,26 @@
-# Management UI verification
+# Admin UI verification
 
-The UI shares the speech gateways' dark panels, 230px sidebar, controls and
-responsive navigation. It is served at both `/ui` and `/webui`, uses local ES
-modules, and needs no build or external fonts/scripts.
+The management UI is the shared admin shell (`src/admin_shell/`, `src/static/admin/`)
+copied from the fastapi-admin-ui-template, served at `/admin/ui` with assets under
+`/admin/assets/`. `/ui` and `/webui` redirect (307, relative) to it. It uses local
+ES modules and needs no build or external fonts/scripts. `/admin/*` is
+unauthenticated on purpose: the same trust boundary as `/v1/*`.
 
 ## Scope and expectations
 
 | Requirement | Verification |
 | --- | --- |
-| Existing clients retain their contracts | Real FastAPI HTTP tests cover embeddings/responses/rerank aliases, float/base64 and dimensions, model/load/unload/download payloads. |
-| Reading UI state performs no inference/download/load | HTTP read tests and browser request assertions. |
-| Downloaded files are distinct from loaded and inference-confirmed | State transitions, failed partial-download gate, unload/reload evidence reset. Config discovery does not verify weight completeness or provenance. |
-| Forms give actionable errors | Repository/path validation, text length/dimension boundaries, backend 400s, partial outage and recovery. |
-| Mobile and keyboard access | 1440×1000 and 390×844 Chromium checks, labelled forms, native navigation buttons/dialog, visible focus, no page overflow. |
-| Server strings stay literal | Hostile synthetic model name and no generated image element; rendering uses textContent. |
-| Deployment paths work | `/ui`, `/webui`, and `/prefix/webui` assets and API resolution. |
-| Refresh preserves work | Inputs/selection, expanded download logs, one refresh cycle, aborted read ignored. |
+| Existing clients retain their contracts | `test_management_ui.py`: embeddings/responses/rerank aliases, float/base64 and dimensions, model/load/unload/download payloads (`DownloadStatusResponse` fields). |
+| Reading UI state performs no inference/download/load | HTTP read tests (`/health`, `/admin/health`, `/admin/interactions`, catalog, downloads) assert loaders are not called; the browser asserts no POST on open. |
+| Admin wiring | `test_admin.py`: `/admin/ui` without auth, redirects, assets + traversal 404, model roots and guessed type, `/v1` download validation 400/409/429 through the shared catalog, empty job list shape, load/unload 409s, partial-download load gate, `/admin/health`, `/admin/interactions` columns, SSE hub keys. |
+| Downloaded files are distinct from loaded and inference-confirmed | Server Health shows per-load inference evidence; a failed/active download blocks the admin load. Config discovery does not verify weight completeness or provenance. |
+| Service screens | `test_admin_screens.js`: registry order, catalog naming/state rules, playground payload/cosine validation, `/v1` client prefix handling. |
+| Real browser | `test_admin_browser.cjs` (Chromium, desktop 1440x1000 and mobile 390x844): SSE feed, models table/actions, catalog one-click download, playground, logs, health, no overflow, `/prefix` reverse-proxy path. |
 
 ## CPU tests
 
-Use Python 3.13 with the pinned CPU test dependencies: Inference
-runtimes and torch are replaced in tests; HTTP/framework behavior is real.
-No model is downloaded.
+Use Python 3.13 with the pinned CPU test dependencies. Inference runtimes and
+torch are replaced in tests; HTTP/framework behavior is real. No model is downloaded.
 
 ```sh
 python -m pip install -r tests/requirements.txt
@@ -32,53 +31,35 @@ npm test
 
 ## Browser fixture
 
-Use a locally installed Playwright and Chromium. These checks run against
-synthetic vectors and simulated resources. They do **not** validate model
-compatibility, real GPU inference, weight integrity or production proxy/TLS.
+Use a locally installed Playwright and Chromium. The checks run against the real
+`server.app` (admin routers, SSE hub, `/v1` API) with synthetic vectors, stubbed
+loaders and a fake download runner. They do **not** validate model compatibility,
+real GPU inference, weight integrity or production proxy/TLS.
 
 ```sh
 npx --no-install playwright install --with-deps chromium
 npm run test:browser
 ```
 
-The browser harness starts/stops its own loopback fixture, refuses an occupied
-port, runs the desktop/mobile scenario and six isolated interaction regressions.
-Use PLAYWRIGHT_MODULE / CHROMIUM_PATH for an existing local installation and
-UI_ARTIFACT_DIR to select a screenshot directory. The regressions cover repeated
-cancel/Escape, double confirmation, read failure after a successful write, load
-failure/retry, duplicate Playground submissions and coalesced refresh requests.
-
-The fixture stubs both loaders and download workers, and must never be used as
-a production entrypoint. The browser writes screenshots and `browser-qa.json`.
-Do not run it against a production service: its fixture-only reset endpoints
-and explicit synthetic download/load/unload actions are intentional.
+The harness starts/stops its own loopback fixture on port 19975 and refuses an
+occupied port. Use PLAYWRIGHT_MODULE / CHROMIUM_PATH for an existing local
+installation and UI_ARTIFACT_DIR to select the screenshot directory. The browser
+writes screenshots and `browser-qa.json`. Never run the fixture as a production
+entrypoint.
 
 ## Operational limits
 
-`GET /ui/status` exposes only non-secret startup configuration and the last
-successful inference time for each currently loaded model. An unload/reload
-or restart clears that evidence. Existing model listing/health/inference API
-payloads remain unchanged. The settings view is read-only; no config write,
-authentication policy, dependency/runtime upgrade or deployment is included.
+Download jobs live in memory (shared `DownloadJobRegistry`): at most 3 concurrent,
+history capped, lost on restart, no cancellation, pinned revision or checksum
+verification. Job logs are no longer kept (`logs_count` is 0, `last_log` null on
+the legacy `/v1/models/downloads*` routes). Load type in the admin UI is guessed
+from `config.json` architectures (`*ForSequenceClassification` = reranker) or a
+`rerank` directory name; `/v1/models/load` still accepts an explicit type.
 The playground only offers already-loaded embedding models; a concurrent
-external unload may still cause the existing AUTO_LOAD behavior on its next
-request. This UI cannot reserve a model or GPU memory.
-
-The backend's existing downloader has no cancellation or pinned-revision /
-checksum-verification contract. A completed download is labelled as inference
-unverified, and local config detection is labelled as compatibility unverified.
-The UI never claims those files are verified weights. A failed job blocks its
-local model's UI load until retried successfully. Same-name catalog candidates
-without provenance are labelled explicitly.
+external unload may still cause the existing AUTO_LOAD behavior on its next request.
 
 The CPU and UI tests workflow runs on pull requests, main updates and manual
 dispatch. It checks out the exact PR head, uses pinned CPU/Playwright dependencies,
 and has a 12-minute job limit with cancellation of superseded runs. No inference
-runtime, model weights or production credentials are used.
-
-This personal repository is public. Runner enumeration returned a permission
-error, so no usable self-hosted runner was verified. Its existing Docker workflow
-already uses ubuntu-latest; standard hosted runner minutes are free for public
-repositories ([GitHub billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions)).
-The test workflow creates no caches or uploaded artifacts, and records evidence
-in logs/the job summary. The existing Docker publishing workflow is preserved.
+runtime, model weights or production credentials are used. The existing Docker
+publishing workflow is preserved.

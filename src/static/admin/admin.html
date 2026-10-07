@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<!-- Admin shell. Serve with routes/admin_ui.py (create_admin_ui_router); never a public static mount.
+     Copy the entire static/admin/ directory. Per service: <title>, data-service, header text, admin.css accent.
+     No inline scripts/styles, no onclick attributes, no CDN. Screens are listed in screens/index.js. -->
+<html lang="ja" data-service="embedding-api">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>embedding-api Admin</title>
+  <link rel="stylesheet" href="assets/admin.css">
+  <script type="module" src="assets/shell.js"></script>
+</head>
+<body>
+  <header class="header">
+    <span class="header-icon" aria-hidden="true">●</span>
+    <span>embedding-api Admin</span>
+    <span id="feed-status" class="header-meta" aria-live="polite"></span>
+  </header>
+  <div id="err-banner" class="err-banner" role="alert" hidden></div>
+  <div class="layout">
+    <nav class="sidebar" aria-label="管理メニュー">
+      <div id="sidebar-nav" class="sidebar-nav"></div>
+      <div class="sidebar-spacer"></div>
+      <div id="sidebar-footer" class="sidebar-footer">— 未ロード</div>
+    </nav>
+    <main id="panel" class="panel" aria-live="polite">
+      <div class="placeholder">← サイドバーから項目を選んでください</div>
+    </main>
+  </div>
+</body>
+</html>

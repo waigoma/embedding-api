@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test tests/test_ui_state.js tests/test_ui_api.js",
+    "test": "node --test tests/test_admin_screens.js",
     "test:browser": "python tests/run_browser_tests.py"
   },
   "devDependencies": {"playwright": "1.58.2"}
