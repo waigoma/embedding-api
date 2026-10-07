@@ -1,5 +1,8 @@
-"""Loopback-only browser fixture. No weights, external downloads, or production calls."""
-import json
+"""Loopback-only browser fixture for the admin UI. No weights, external downloads, or production calls.
+
+Runs the real server.app (admin routers, SSE hub, /v1 API) with stubbed model
+loaders and a fake download runner. Never use it as a production entrypoint.
+"""
 import os
 import sys
 import tempfile
@@ -17,13 +20,31 @@ os.environ["DEVICE_MODE"] = "cpu"
 os.environ["PRELOAD_EMBEDDING"] = ""
 os.environ["PRELOAD_RERANKER"] = ""
 os.environ["IDLE_TTL"] = "0"
+os.environ["DOWNLOAD_PROGRESS_INTERVAL_SEC"] = "0.2"
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 torch = MagicMock()
 torch.cuda.is_available.return_value = False
 sys.modules["torch"] = torch
-import server
-local_model_ids = server._iter_local_model_relative_ids
-catalog = list(server.MODEL_CATALOG)
+
+from admin_shell.admin.download_jobs import DownloadFailed  # noqa: E402
+from admin_shell.admin.hf_download import HfSnapshotDownloader  # noqa: E402
+
+
+def fake_run(self, repo_id, target_dir, report):
+    """Synthetic downloader: 'fail' repos fail, others write a config after a short progress."""
+    report({"total_bytes": 1024**3})
+    time.sleep(0.3)
+    report({"downloaded_bytes": 384 * 1024**2, "progress_percent": 37.5, "speed_mbps": 18.4})
+    time.sleep(0.3)
+    if "fail" in repo_id:
+        raise DownloadFailed("synthetic network timeout · retry available")
+    Path(target_dir).mkdir(parents=True, exist_ok=True)
+    (Path(target_dir) / "config.json").write_text('{"architectures": ["BertModel"]}')
+
+
+HfSnapshotDownloader.run = fake_run  # fixture process only
+
+import server  # noqa: E402
 
 
 def fake_entry(model_type="embedding"):
@@ -39,60 +60,30 @@ def fake_entry(model_type="embedding"):
 
 
 def setup():
-    server._iter_local_model_relative_ids = local_model_ids
-    server.MODEL_CATALOG = list(catalog)
-    server.registry.clear()
-    server.download_jobs.clear()
-    server.inference_logs.clear()
-    for name in ["embedding/ruri-v3-310m", "Qwen3-Embedding-0.6B", "reranker/synthetic", "synthetic/<img onerror=alert(1)>"]:
+    for name, arch in [
+        ("embedding/ruri-v3-310m", "ModernBertModel"),
+        ("Qwen3-Embedding-0.6B", "Qwen3Model"),
+        ("reranker/synthetic", "XLMRobertaForSequenceClassification"),
+        ("synthetic/<img onerror=alert(1)>", "BertModel"),
+    ]:
         path = Path(model_dir.name) / name
         path.mkdir(parents=True, exist_ok=True)
-        (path / "config.json").write_text('{}')
+        (path / "config.json").write_text('{"architectures": ["%s"]}' % arch)
     server.registry["embedding/ruri-v3-310m"] = fake_entry()
-    now = time.time()
-    for i, (repo, local, status) in enumerate([
-        ("Qwen/Qwen3-Embedding-4B", "Qwen3-Embedding-4B", "downloading"),
-        ("Qwen/Qwen3-Reranker-0.6B", "reranker/synthetic", "failed"),
-        ("Qwen/Qwen3-Embedding-0.6B", "Qwen3-Embedding-0.6B", "completed"),
-    ]):
-        server.download_jobs[str(i)] = {
-            "id": str(i), "repo_id": repo, "local_name": local,
-            "target_dir": str(Path(model_dir.name) / local), "status": status,
-            "created_at": now - i, "progress_percent": 37.5 if status == "downloading" else None,
-            "downloaded_bytes": 384 * 1024**2, "total_bytes": 1024**3 if status != "failed" else None,
-            "speed_mbps": 18.4, "error": "synthetic network timeout · retry available" if status == "failed" else None,
-            "logs": [{"message": "synthetic fixture: no files downloaded"}],
-        }
+    # A failed job over an existing directory: the admin load must refuse it.
+    server.admin_catalog.start_download("Qwen/fail-reranker", "reranker/synthetic", True)
 
 
 server._startup_once = lambda: None
 server._load_embedding = lambda _: fake_entry()
 server._load_reranker = lambda _: fake_entry("reranker")
-server._run_download_job = lambda job_id, *_: server._set_download_status(job_id, status="completed")
 server.DEVICE = "cuda"
 server.ACCELERATOR_BACKEND = "cuda"
 torch.cuda.mem_get_info.return_value = (2377 * 1024**2, 15850 * 1024**2)
 torch.cuda.get_device_name.return_value = "Synthetic GPU · UI fixture"
 setup()
 
-
-@server.app.post("/fixture/reset")
-async def reset():
-    setup()
-    return {"ok": True}
-
-
-@server.app.post("/fixture/empty")
-async def empty():
-    server.registry.clear()
-    server.download_jobs.clear()
-    server.inference_logs.clear()
-    server._iter_local_model_relative_ids = lambda: []
-    server.MODEL_CATALOG = []
-    return {"ok": True}
-
-
-outer = FastAPI()
+outer = FastAPI(lifespan=server.lifespan)
 outer.mount("/prefix", server.app)
 outer.mount("/", server.app)
 if __name__ == "__main__":

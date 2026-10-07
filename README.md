@@ -109,18 +109,23 @@ SentenceTransformer に渡すオプションは JSON で指定できます。
 export SENTENCE_TRANSFORMER_KWARGS='{"model_kwargs":{"attn_implementation":"flash_attention_2","torch_dtype":"float16"}}'
 ```
 
-## WebUI (モデル DL 管理)
+## 管理 UI (モデル DL 管理)
 
-`/ui` で WebUI を開くと、次を操作できます。
+`/admin/ui` で管理 UI を開くと、次を操作できます。旧 URL の `/ui` と `/webui` は
+`/admin/ui` へリダイレクト (307) します。
 
-- `Hugging Face` からモデルをダウンロード開始 (`repo_id` は手入力)
-- ダウンロード進捗 (`0-100%`, `MB/s`, `downloaded/total size`) の確認
-- ローカルモデル一覧の確認と `Load` / (ロード済みのみ) `Unload`（一覧は `config.json` または `adapter_config.json` があるフォルダをモデルルートとして表示し、`.cache` 配下などは出しません）
-- ロード済みモデルのトップ表示
-- 推論ログ表示 (`embedding` / `rerank` 実行時)
+- **Model Downloads**: ローカルモデル一覧 (種別は `config.json` の architectures と
+  ディレクトリ名から推定)、ダウンロード進捗 (`%`, `MB/s`, `downloaded/total size`)、
+  `repo_id` 手入力でのダウンロード開始、`Load` / `Unload`
+- **カタログ**: `GET /v1/models/catalog` (`MODEL_CATALOG_JSON`) のプリセットをワンクリックで取得
+- **Playground**: ロード済み embedding モデルで 2 テキストのベクトル・次元・cosine similarity を確認
+- **Inference Logs**: 推論ログ (`embedding` / `responses_embedding` / `rerank` / `chat_completions`)
+- **Server Health**: デバイス・GPU メモリ・ロード済みモデルと推論確認・起動設定 (読み取り専用)
 
-`/v1/models/download` は `download_from_huggingface.py` を直接実行する方式ではなく、  
-`server.py` 内の `huggingface_hub.snapshot_download()` をバックグラウンドジョブで実行します。
+ローカル一覧は `config.json` または `adapter_config.json` があるフォルダをモデルルートとして
+表示し、`.cache` 配下などは出しません。ダウンロードは `server.py` 内で
+`huggingface_hub.snapshot_download()` をバックグラウンドジョブとして実行します
+(同時 3 件まで、超過は 429。ジョブ履歴はメモリ内のみで再起動で消えます)。
 
 そのため、モデルを保存する `/models` は書き込み可能である必要があります (`:rw`)。
 private / gated model を落とす場合は `HF_TOKEN` を設定してください。
@@ -128,7 +133,7 @@ private / gated model を落とす場合は `HF_TOKEN` を設定してくださ�
 ### 起動後に開く URL
 
 ```text
-http://localhost:7997/ui
+http://localhost:7997/admin/ui
 ```
 
 ### モデル DL API
@@ -246,21 +251,22 @@ curl -X POST http://localhost:7997/v1/embeddings \
   -d '{"model":"Qwen3-Embedding-0.6B","input":"test","dimensions":256,"encoding_format":"base64"}'
 ```
 
-### 管理 UI
+### 管理 UI の構成
 
-`/ui` または `/webui` から、モデル・カタログと取得ジョブ・Playground・
-推論ログ・稼働設定を確認できます。外部 CDN やフロントエンドのビルドは不要です。
-`src/webui/` の HTML / CSS / JS を一緒に配布してください。
+管理 UI は共通テンプレート (fastapi-admin-ui-template) 由来の admin shell (`src/admin_shell/`,
+`src/static/admin/`) です。外部 CDN やフロントエンドのビルドは不要です。
+`src/admin_shell/`、`src/embedding_admin.py`、`src/static/` を `server.py` と一緒に
+配布してください (Dockerfile は対応済み)。
 
-- ローカルの config 検出、ロード済み、現ロードでの推論確認を別々に表示します。
+- `/admin/*` は `/v1/*` と同じく**認証なし**です。信頼できるネットワーク内でのみ公開してください。
+- 管理 API: `GET /admin/models` (ローカル + ジョブ + ロード状態)、`POST /admin/models/download`、
+  `GET /admin/models/downloads[/{job_id}]`、`POST /admin/models/{local_name}/load|unload`、
+  `GET /admin/interactions`、`GET /admin/health`、`GET /admin/events` (SSE)。
+- 取得失敗・取得中のジョブがあるモデルは、部分ファイルの可能性があるため管理 UI からはロードできません (409)。
   ローカル検出や取得完了だけでは、重みの完全性・互換性・実行可能性を保証しません。
-- カタログの取得、ロード、アンロードは確認ダイアログから明示的に実行します。
-  再取得は既存ファイルを使います。GPU メモリ表示は全プロセスの合計です。
-- Playground はロード済み embedding モデルのみ選択でき、各 2,000 文字以内の
-  2 テキストでベクトルの先頭要素・次元・cosine similarity を表示します。
-  テキストはこのサーバーに送信します。既存 AUTO_LOAD 設定は変更しません。
-- 稼働設定は閲覧のみです。設定変更は従来どおりサービスの起動設定で行います。
-- `GET /ui/status` は非機密の起動設定と現ロードの推論時刻を返します。
-  `/v1/*` と既存の別名エンドポイント・レスポンスは維持しています。
+- `GET /admin/health` は `/health` に非機密の起動設定と、現ロードでの推論時刻を加えたものです
+  (旧 `GET /ui/status` の内容)。アンロード・再起動で推論時刻は消えます。
+- `/v1/*` と既存の別名エンドポイント・レスポンス形は維持しています。ただし取得ジョブのログは
+  保持しなくなったため、`logs_count` は常に `0`、`last_log` は `null` です。
 
 検証手順と実モデル未検証の範囲は [tests/README.md](tests/README.md) に記載しています。
