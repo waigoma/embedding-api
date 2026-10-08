@@ -213,7 +213,7 @@ def build_overview(
     catalog_entries: CatalogEntries,
     roots: tuple[Path, ...],
 ) -> ModelOverviewService:
-    scanner = EmbeddingModelScanner(model_dir)
+    scanner = EmbeddingModelScanner(model_dir, roots)
     load_state = RegistryLoadState(
         loaded_names=loaded_names, loader=loader, unloader=unloader, scanner=scanner, jobs=jobs
     )

@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -122,14 +122,29 @@ def _directory_size(directory: Path) -> int:
     return total
 
 
+def find_model_roots_under(model_dir: Path, roots: Iterable[Path] | None) -> list[Path]:
+    """Model roots inside the given storage roots only (default: all of model_dir).
+
+    MODEL_DIR is shared with stt / tts / HF caches; walking only the declared roots keeps
+    their models out of the embedding listings.
+    """
+    if roots is None:
+        return find_model_roots(model_dir)
+    found: list[Path] = []
+    for root in roots:
+        found.extend(find_model_roots(root))
+    return sorted(set(found))
+
+
 class EmbeddingModelScanner:
-    def __init__(self, model_dir: Path) -> None:
+    def __init__(self, model_dir: Path, roots: tuple[Path, ...] | None = None) -> None:
         self._model_dir = model_dir
+        self._roots = roots
 
     def scan(self) -> list[LocalModel]:
         root = self._model_dir
         models: list[LocalModel] = []
-        for directory in find_model_roots(root):
+        for directory in find_model_roots_under(root, self._roots):
             models.append(
                 LocalModel(
                     local_name=directory.relative_to(root).as_posix(),
@@ -143,7 +158,7 @@ class EmbeddingModelScanner:
     def type_of(self, local_name: str) -> str | None:
         """Guessed type of an on-disk model root, or None when local_name is not one."""
         root = self._model_dir
-        for directory in find_model_roots(root):
+        for directory in find_model_roots_under(root, self._roots):
             if directory.relative_to(root).as_posix() == local_name:
                 return guess_model_type(directory)
         return None
@@ -234,8 +249,9 @@ def build_catalog(
     loaded_names: Callable[[], set[str]],
     loader: ModelLoader,
     unloader: ModelUnloader,
+    roots: tuple[Path, ...] | None = None,
 ) -> ModelCatalogService:
-    scanner = EmbeddingModelScanner(model_dir)
+    scanner = EmbeddingModelScanner(model_dir, roots)
     return ModelCatalogService(
         scanner=scanner,
         models_dir=model_dir,
