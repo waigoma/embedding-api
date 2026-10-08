@@ -130,6 +130,8 @@ const SIDEBAR = ['▦ モデル管理', '▷ Playground', '📊 Inference Logs',
       await page.setViewportSize({width: 1440, height: 1000});
       await page.goto(origin + '/prefix/webui');
       assert.equal(new URL(page.url()).pathname, '/prefix/admin/ui');
+      // Let the redirected page finish its first load; leaving mid-fetch aborts it ("Failed to fetch").
+      await modelRow('Qwen3-Embedding-4B').waitFor();
       await page.goto(origin + '/prefix/admin/ui?p=1#models');
       await modelRow('Qwen3-Embedding-4B').waitFor();
     });
