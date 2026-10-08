@@ -31,6 +31,7 @@ except ImportError:  # pragma: no cover - dependency-light environments
 
 import server  # noqa: E402
 import embedding_admin  # noqa: E402
+import embedding_overview  # noqa: E402
 from admin_shell.admin.download_jobs import DownloadFailed, DownloadJobRegistry  # noqa: E402
 from admin_shell.admin.model_catalog import ModelNotLoadable  # noqa: E402
 
@@ -96,7 +97,7 @@ class TestServerAdminRoutes(_TempModelDir):
         for asset, media in (
             ("shell.js", "text/javascript"),
             ("core/table.js", "text/javascript"),
-            ("screens/catalog.js", "text/javascript"),
+            ("screens/model_overview.js", "text/javascript"),
             ("screens/playground.js", "text/javascript"),
             ("screens/health.js", "text/javascript"),
             ("service/v1.js", "text/javascript"),
@@ -163,7 +164,7 @@ class TestServerAdminRoutes(_TempModelDir):
         self.assertNotIn("config", plain)  # the public /health payload is unchanged
 
     def test_hub_providers_cover_the_ui_feed_keys(self):
-        self.assertEqual(sorted(server.admin_hub.keys), ["health", "interactions", "models"])
+        self.assertEqual(sorted(server.admin_hub.keys), ["health", "interactions", "models", "overview"])
         snapshot = asyncio.run(server.admin_hub.build_snapshot())
         self.assertEqual(snapshot["health"]["status"], "ok")
         self.assertEqual([c["key"] for c in snapshot["interactions"]["columns"]],
@@ -180,6 +181,11 @@ class TestEmbeddingAdminComposition(_TempModelDir):
         self.load_calls = []
         self.logs = []
         self.jobs = self.ledger()
+        self.catalog_entries = [
+            {"repo_id": "Qwen/Qwen3-Embedding-0.6B", "family": "Qwen3-Embedding", "type": "embedding"},
+            {"repo_id": "Qwen/Qwen3-Reranker-0.6B", "family": "Qwen3-Reranker", "type": "reranker"},
+            {"repo_id": "cl-nagoya/ruri-v3-310m", "family": "Ruri", "type": "embedding"},
+        ]
         catalog = embedding_admin.build_catalog(
             self.model_dir,
             jobs=self.jobs,
@@ -187,13 +193,25 @@ class TestEmbeddingAdminComposition(_TempModelDir):
             loader=self._load,
             unloader=lambda name: self.loaded.pop(name, None) is not None,
         )
+        overview = self.build_overview(self.jobs)
 
         async def health():
             return {"status": "ok", "loaded": dict(self.loaded)}
 
         app = FastAPI()
-        self.hub = embedding_admin.mount_admin(app, catalog=catalog, logs=lambda limit: self.logs[-limit:], health=health)
+        self.hub = embedding_admin.mount_admin(app, catalog=catalog, overview=overview, logs=lambda limit: self.logs[-limit:], health=health)
         self.client = TestClient(app, raise_server_exceptions=False)
+
+    def build_overview(self, jobs, roots="embedding"):
+        return embedding_overview.build_overview(
+            self.model_dir,
+            jobs=jobs,
+            loaded_names=lambda: set(self.loaded),
+            loader=self._load,
+            unloader=lambda name: self.loaded.pop(name, None) is not None,
+            catalog_entries=lambda: self.catalog_entries,
+            roots=embedding_overview.parse_roots(roots, self.model_dir),
+        )
 
     def _load(self, name, model_type):
         self.load_calls.append((name, model_type))
@@ -260,7 +278,9 @@ class TestEmbeddingAdminComposition(_TempModelDir):
             self.model_dir, jobs=self.jobs, loaded_names=set, loader=broken, unloader=lambda name: False,
         )
         app = FastAPI()
-        embedding_admin.mount_admin(app, catalog=catalog, logs=lambda limit: [], health=health)
+        embedding_admin.mount_admin(
+            app, catalog=catalog, overview=self.build_overview(self.jobs), logs=lambda limit: [], health=health
+        )
         response = TestClient(app).post("/admin/models/embedding/demo/load")
         self.assertEqual(response.status_code, 409)
         self.assertIn("synthetic VRAM unavailable", response.json()["detail"])
@@ -273,6 +293,157 @@ class TestEmbeddingAdminComposition(_TempModelDir):
         self.assertEqual([job["status"] for job in items], ["queued"])
         row = next(item for item in self.client.get("/admin/models").json()["items"] if item["local_name"] == "embedding/new")
         self.assertEqual(row["status"], "queued")
+
+    # ----- model overview -----
+
+    def overview(self):
+        response = self.client.get("/admin/models/overview")
+        self.assertEqual(response.status_code, 200, response.text)
+        data = response.json()
+        return data, {item["id"]: item for item in data["items"]}
+
+    @staticmethod
+    def actions(item):
+        return {action["id"]: action for action in item["actions"]}
+
+    def test_overview_envelope_and_catalog_names_under_the_first_root(self):
+        data, items = self.overview()
+        self.assertEqual(data["version_label"], "種別")
+        self.assertEqual([step["key"] for step in data["steps"]], ["downloaded", "loaded"])
+        self.assertEqual(data["fetch"], {
+            "name_prefix": "embedding/", "api_name": True, "fields": [],
+            "request": {"method": "POST", "path": "models/download"},
+        })
+        self.assertEqual(data["roots"], [str((self.model_dir / "embedding").resolve())])
+        ruri = items["embedding/ruri-v3-310m"]
+        self.assertEqual((ruri["title"], ruri["family"], ruri["version"]), ("ruri-v3-310m", "Ruri", "埋め込み"))
+        self.assertEqual((ruri["local_name"], ruri["api_name"]), ("embedding/ruri-v3-310m", "embedding/ruri-v3-310m"))
+        self.assertEqual(ruri["source"], "https://huggingface.co/cl-nagoya/ruri-v3-310m")
+        self.assertEqual(items["embedding/Qwen3-Reranker-0.6B"]["version"], "リランカー")
+        self.assertNotIn("claims", ruri)
+
+    def test_overview_catalog_item_follows_download_load_unload_states(self):
+        name = "embedding/ruri-v3-310m"
+        _, items = self.overview()
+        acts = self.actions(items[name])
+        self.assertEqual(items[name]["lifecycle"], {"downloaded": False, "loaded": False})
+        self.assertTrue(acts["download"]["enabled"] and acts["download"]["primary"])
+        self.assertEqual(acts["download"]["request"], {
+            "method": "POST", "path": "models/download",
+            "body": {"repo_id": "cl-nagoya/ruri-v3-310m", "local_name": name, "force": False},
+        })
+        self.assertFalse(acts["load"]["enabled"])
+        self.assertIn("取得", acts["load"]["reason"])
+
+        write_model(self.model_dir, name, ["ModernBertModel"])
+        _, items = self.overview()
+        acts = self.actions(items[name])
+        self.assertEqual(items[name]["lifecycle"], {"downloaded": True, "loaded": False})
+        self.assertGreater(items[name]["size_bytes"], 0)
+        self.assertFalse(acts["download"]["enabled"])
+        self.assertFalse(acts["download"]["primary"])
+        self.assertTrue(acts["load"]["enabled"] and acts["load"]["primary"])
+        self.assertEqual(acts["load"]["request"], {"method": "POST", "path": "models/embedding/ruri-v3-310m/load"})
+        self.assertFalse(acts["unload"]["enabled"])
+        self.assertEqual(acts["unload"]["tone"], "danger")
+
+        self.loaded[name] = "embedding"
+        _, items = self.overview()
+        acts = self.actions(items[name])
+        self.assertTrue(items[name]["lifecycle"]["loaded"])
+        self.assertFalse(acts["load"]["primary"])
+        self.assertTrue(acts["unload"]["enabled"] and acts["unload"]["primary"])
+        self.assertEqual(acts["unload"]["request"], {"method": "POST", "path": "models/embedding/ruri-v3-310m/unload"})
+
+    def test_overview_request_paths_encode_each_segment(self):
+        self.assertEqual(embedding_overview.admin_path("models", "embedding/a b#c", "load"), "models/embedding/a%20b%23c/load")
+        write_model(self.model_dir, "embedding/a b#c", ["BertModel"])
+        _, items = self.overview()
+        load = self.actions(items["local:embedding/a b#c"])["load"]
+        self.assertEqual(load["request"]["path"], "models/embedding/a%20b%23c/load")
+
+    def test_overview_load_is_blocked_by_an_unfinished_or_failed_download(self):
+        name = "embedding/ruri-v3-310m"
+        write_model(self.model_dir, name, ["ModernBertModel"])
+        runner = MagicMock()
+        runner.run.side_effect = DownloadFailed("synthetic network error")
+        failing = DownloadJobRegistry(runner, spawn=lambda run: run())
+        failing.start("cl-nagoya/ruri-v3-310m", name, self.model_dir / name)
+        overview = self.build_overview(failing)
+        items = {item["id"]: item for item in asyncio.run(overview.snapshot())["items"]}
+        acts = self.actions(items[name])
+        self.assertFalse(acts["load"]["enabled"])
+        self.assertIn("失敗", acts["load"]["reason"])
+        self.assertEqual(items[name]["job"]["status"], "failed")
+        # A failed job also turns download into a forced retry.
+        self.assertTrue(acts["download"]["enabled"])
+        self.assertTrue(acts["download"]["request"]["body"]["force"])
+
+    def test_overview_active_job_attaches_and_disables_download(self):
+        name = "embedding/ruri-v3-310m"
+        self.jobs.start("cl-nagoya/ruri-v3-310m", name, self.model_dir / name)
+        _, items = self.overview()
+        item = items[name]
+        self.assertEqual(item["job"]["status"], "queued")
+        self.assertFalse(self.actions(item)["download"]["enabled"])
+        self.assertEqual(self.actions(item)["download"]["reason"], "取得中です。")
+        # Free-form job outside the catalog becomes its own pending row.
+        self.jobs.start("o/other", "embedding/other", self.model_dir / "embedding/other")
+        _, items = self.overview()
+        self.assertEqual(items["job:" + next(j["id"] for j in self.jobs.all() if j["local_name"] == "embedding/other")]["family"], "カタログ外")
+
+    def test_overview_roots_filter_and_local_rows(self):
+        write_model(self.model_dir, "embedding/harrier-oss-v1-0.6b", ["BertModel"])
+        write_model(self.model_dir, "embedding/my-qwen3-reranker", ["Qwen3ForSequenceClassification"])
+        write_model(self.model_dir, "stt/onnx-whisper", ["WhisperModel"])
+        write_model(self.model_dir, "hf-cache/models--x/snapshots/abc", ["BertModel"])
+        write_model(self.model_dir, "Qwen3-Reranker-0.6B", ["Qwen3ForCausalLM"])  # root level: not the catalog name
+        _, items = self.overview()
+        self.assertEqual(
+            {i for i, item in items.items() if item["support"] == "local"},
+            {"local:embedding/harrier-oss-v1-0.6b", "local:embedding/my-qwen3-reranker"},
+        )
+        harrier = items["local:embedding/harrier-oss-v1-0.6b"]
+        self.assertEqual(harrier["family"], "カタログ外")
+        self.assertEqual(harrier["api_name"], "embedding/harrier-oss-v1-0.6b")
+        self.assertEqual(items["local:embedding/my-qwen3-reranker"]["family"], "Qwen3-Reranker")
+        self.assertEqual(set(self.actions(harrier)), {"load", "unload"})
+        self.assertTrue(self.actions(harrier)["load"]["primary"])
+        self.assertFalse(items["embedding/Qwen3-Reranker-0.6B"]["lifecycle"]["downloaded"])
+        # The classic listing keeps its unscoped behaviour.
+        listed = {row["local_name"] for row in self.client.get("/admin/models").json()["items"]}
+        self.assertIn("stt/onnx-whisper", listed)
+
+    def test_overview_present_without_config_is_unverified_and_not_downloadable(self):
+        name = "embedding/ruri-v3-310m"
+        (self.model_dir / name).mkdir(parents=True)
+        (self.model_dir / name / "model.safetensors").write_bytes(b"x")
+        _, items = self.overview()
+        self.assertTrue(items[name]["lifecycle"]["downloaded"])
+        self.assertTrue(items[name]["unverified"])
+        self.assertFalse(self.actions(items[name])["download"]["enabled"])
+        self.assertTrue(self.actions(items[name])["load"]["enabled"])  # requires "downloaded", settled by the merge
+
+    def test_overview_roots_parsing(self):
+        parse = embedding_overview.parse_roots
+        base = self.model_dir
+        self.assertEqual(parse("", base), ((base / "embedding").resolve(),))
+        self.assertEqual(parse(" a , b/c ,a", base), ((base / "a").resolve(), (base / "b/c").resolve()))
+        self.assertEqual(parse(str(base / "abs"), base), ((base / "abs").resolve(),))
+        for bad in ("..", "../x", "/etc", "."):
+            with self.assertRaises(ValueError, msg=bad):
+                parse(bad, base)
+        write_model(self.model_dir, "tts/voice", ["BertModel"])
+        write_model(self.model_dir, "embedding/e1", ["BertModel"])
+        wide = self.build_overview(self.jobs, roots="embedding,tts")
+        names = {i["id"] for i in asyncio.run(wide.snapshot())["items"]}
+        self.assertTrue({"local:tts/voice", "local:embedding/e1"} <= names)
+
+    def test_overview_http_has_no_authentication_and_does_not_load(self):
+        write_model(self.model_dir, "embedding/e1", ["BertModel"])
+        self.assertEqual(self.client.get("/admin/models/overview").status_code, 200)
+        self.assertEqual(self.load_calls, [])
+        self.assertIn("overview", self.hub.keys)
 
     def test_interactions_columns_and_rows_newest_first(self):
         self.logs.extend([

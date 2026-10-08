@@ -30,9 +30,11 @@ from admin_shell.admin.model_catalog import (
     ModelCatalogService,
     ModelNotLoadable,
 )
+from admin_shell.admin.model_overview import ModelOverviewService
 from admin_shell.admin.table_spec import ColumnSpec
 from admin_shell.routes.admin_events import create_events_router
 from admin_shell.routes.admin_interactions import create_interactions_router
+from admin_shell.routes.admin_model_overview import create_model_overview_router
 from admin_shell.routes.admin_models import create_models_router, translate_errors
 from admin_shell.routes.admin_ui import create_admin_ui_router
 
@@ -56,6 +58,13 @@ LOAD_BLOCKING_JOB_STATUSES = {
     "queued": "download in progress; wait for it to finish before loading",
     "downloading": "download in progress; wait for it to finish before loading",
     "failed": "last download failed and files may be partial; retry the download first",
+}
+
+# Japanese wording of the same gate, for the overview's disabled-action reasons.
+LOAD_BLOCKING_REASONS_JA = {
+    "queued": "取得の完了を待ってからロードしてください。",
+    "downloading": "取得の完了を待ってからロードしてください。",
+    "failed": "直前の取得が失敗し、ファイルが不完全な可能性があります。先に取得をやり直してください。",
 }
 
 ModelLoader = Callable[[str, str], Any]  # (model_id, model_type) -> registers the model
@@ -161,12 +170,18 @@ class RegistryLoadState:
     def loaded_names(self) -> set[str]:
         return self._loaded_names()
 
-    def _blocking_reason(self, local_name: str) -> str | None:
+    def blocking_status(self, local_name: str) -> str | None:
+        """Status of the newest download job when it blocks loading (queued/downloading/failed)."""
         jobs = [job for job in self._jobs.all() if job.get("local_name") == local_name]
         if not jobs:
             return None
         latest = max(jobs, key=lambda job: job.get("created_at") or 0)
-        return LOAD_BLOCKING_JOB_STATUSES.get(latest.get("status"))
+        status = latest.get("status")
+        return status if status in LOAD_BLOCKING_JOB_STATUSES else None
+
+    def _blocking_reason(self, local_name: str) -> str | None:
+        status = self.blocking_status(local_name)
+        return LOAD_BLOCKING_JOB_STATUSES[status] if status else None
 
     async def load(self, local_name: str) -> None:
         if local_name in self._loaded_names():
@@ -251,22 +266,25 @@ def mount_admin(
     app: FastAPI,
     *,
     catalog: ModelCatalogService,
+    overview: ModelOverviewService,
     logs: LogSource,
     health: HealthProvider,
     poll_interval: float = 1.0,
 ) -> AdminEventHub:
-    """Mount /admin/* (UI, models, events, interactions, health). Start/stop the hub in lifespan."""
+    """Mount /admin/* (UI, models, model overview, events, interactions, health). Start/stop the hub in lifespan."""
     feed = InteractionsFeed(InferenceLogReader(logs), INTERACTION_COLUMNS)
     hub = AdminEventHub(
-        {"models": catalog.snapshot, "interactions": feed.snapshot, "health": health},
+        {"models": catalog.snapshot, "overview": overview.snapshot, "interactions": feed.snapshot, "health": health},
         poll_interval=poll_interval,
     )
     app.state.model_catalog = catalog
+    app.state.model_overview = overview
     app.state.admin_event_hub = hub
 
     auth = None  # explicit: same trust boundary as the unauthenticated /v1/* API
     app.include_router(create_admin_ui_router(STATIC_DIR, auth=auth))
     app.include_router(create_models_router(catalog, auth=auth))
+    app.include_router(create_model_overview_router(overview, auth=auth))
     app.include_router(create_events_router(hub, auth=auth))
     app.include_router(create_interactions_router(feed, auth=auth))
 

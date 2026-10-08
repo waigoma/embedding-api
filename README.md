@@ -114,10 +114,12 @@ export SENTENCE_TRANSFORMER_KWARGS='{"model_kwargs":{"attn_implementation":"flas
 `/admin/ui` で管理 UI を開くと、次を操作できます。旧 URL の `/ui` と `/webui` は
 `/admin/ui` へリダイレクト (307) します。
 
-- **Model Downloads**: ローカルモデル一覧 (種別は `config.json` の architectures と
-  ディレクトリ名から推定)、ダウンロード進捗 (`%`, `MB/s`, `downloaded/total size`)、
-  `repo_id` 手入力でのダウンロード開始、`Load` / `Unload`
-- **カタログ**: `GET /v1/models/catalog` (`MODEL_CATALOG_JSON`) のプリセットをワンクリックで取得
+- **モデル管理**: カタログ (`MODEL_CATALOG_JSON`、既定は Qwen3-Embedding / Qwen3-Reranker / Ruri) と
+  保存領域のカタログ外モデルをファミリー別に一覧し、行クリックの詳細ドロワーで取得・ロード・解放を操作します
+  (種別は `config.json` の architectures とディレクトリ名から推定)。
+  `repo_id` 手入力の「リポジトリから取得」フォームと、取得進捗 (`%`, `MB/s`) もここにあります。
+  カタログのモデルは `<最初の root>/<リポジトリ名>` (例: `embedding/ruri-v3-310m`) に保存し、
+  その名前がそのまま API の `model` になります。旧 `?tab=catalog` / `?tab=downloads` はここを開きます。
 - **Playground**: ロード済み embedding モデルで 2 テキストのベクトル・次元・cosine similarity を確認
 - **Inference Logs**: 推論ログ (`embedding` / `responses_embedding` / `rerank` / `chat_completions`)
 - **Server Health**: デバイス・GPU メモリ・ロード済みモデルと推論確認・起動設定 (読み取り専用)
@@ -129,6 +131,10 @@ export SENTENCE_TRANSFORMER_KWARGS='{"model_kwargs":{"attn_implementation":"flas
 
 そのため、モデルを保存する `/models` は書き込み可能である必要があります (`:rw`)。
 private / gated model を落とす場合は `HF_TOKEN` を設定してください。
+
+一覧は環境変数 `ADMIN_MODEL_ROOTS` (`MODEL_DIR` からの相対パス、カンマ区切り、絶対パス可。
+既定 `embedding`) の配下に限ります。別用途のモデル (`stt/` など) や HF cache は表示しません。
+`GET /admin/models` (従来の一覧) は `MODEL_DIR` 全体を返すままです。
 
 ### 起動後に開く URL
 
@@ -255,11 +261,11 @@ curl -X POST http://localhost:7997/v1/embeddings \
 
 管理 UI は共通テンプレート (fastapi-admin-ui-template) 由来の admin shell (`src/admin_shell/`,
 `src/static/admin/`) です。外部 CDN やフロントエンドのビルドは不要です。
-`src/admin_shell/`、`src/embedding_admin.py`、`src/static/` を `server.py` と一緒に
+`src/admin_shell/`、`src/embedding_admin.py`、`src/embedding_overview.py`、`src/static/` を `server.py` と一緒に
 配布してください (Dockerfile は対応済み)。
 
 - `/admin/*` は `/v1/*` と同じく**認証なし**です。信頼できるネットワーク内でのみ公開してください。
-- 管理 API: `GET /admin/models` (ローカル + ジョブ + ロード状態)、`POST /admin/models/download`、
+- 管理 API: `GET /admin/models` (ローカル + ジョブ + ロード状態)、`GET /admin/models/overview` (モデル管理画面の read model)、`POST /admin/models/download`、
   `GET /admin/models/downloads[/{job_id}]`、`POST /admin/models/{local_name}/load|unload`、
   `GET /admin/interactions`、`GET /admin/health`、`GET /admin/events` (SSE)。
 - 取得失敗・取得中のジョブがあるモデルは、部分ファイルの可能性があるため管理 UI からはロードできません (409)。

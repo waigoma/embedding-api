@@ -14,8 +14,8 @@ unauthenticated on purpose: the same trust boundary as `/v1/*`.
 | Reading UI state performs no inference/download/load | HTTP read tests (`/health`, `/admin/health`, `/admin/interactions`, catalog, downloads) assert loaders are not called; the browser asserts no POST on open. |
 | Admin wiring | `test_admin.py`: `/admin/ui` without auth, redirects, assets + traversal 404, model roots and guessed type, `/v1` download validation 400/409/429 through the shared catalog, empty job list shape, load/unload 409s, partial-download load gate, `/admin/health`, `/admin/interactions` columns, SSE hub keys. |
 | Downloaded files are distinct from loaded and inference-confirmed | Server Health shows per-load inference evidence; a failed/active download blocks the admin load. Config discovery does not verify weight completeness or provenance. |
-| Service screens | `test_admin_screens.js`: registry order, catalog naming/state rules, playground payload/cosine validation, `/v1` client prefix handling. |
-| Real browser | `test_admin_browser.cjs` (Chromium, desktop 1440x1000 and mobile 390x844): SSE feed, models table/actions, catalog one-click download, playground, logs, health, no overflow, `/prefix` reverse-proxy path. |
+| Service screens | `test_admin_screens.js`: registry order, model-overview registry and action rules, playground payload/cosine validation, `/v1` client prefix handling. |
+| Real browser | `test_admin_browser.cjs` (Chromium, desktop 1440x1000 and mobile 390x844): SSE feed, model overview (families, roots scope, drawer, load/unload, catalog download, old `?tab=` aliases), playground, logs, health, no overflow, `/prefix` reverse-proxy path. |
 
 ## CPU tests
 
