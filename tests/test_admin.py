@@ -146,6 +146,9 @@ class TestServerAdminRoutes(_TempModelDir):
         write_model(self.model_dir, "embedding/demo", ["BertModel"])
         write_model(self.model_dir, "embedding/demo/nested", ["BertModel"])
         write_model(self.model_dir, ".cache/x")
+        write_model(self.model_dir, "stt/onnx-whisper/model", ["WhisperModel"])
+        write_model(self.model_dir, "hf-cache/hub/models--x/snapshots/abc", ["BertModel"])
+        # Only ADMIN_MODEL_ROOTS (default embedding/) is offered; MODEL_DIR is shared with stt / caches.
         data = self.client.get("/v1/models").json()["data"]
         self.assertEqual([(m["id"], m["type"], m["loaded"]) for m in data], [("embedding/demo", "unknown", False)])
 
@@ -192,6 +195,7 @@ class TestEmbeddingAdminComposition(_TempModelDir):
             loaded_names=lambda: set(self.loaded),
             loader=self._load,
             unloader=lambda name: self.loaded.pop(name, None) is not None,
+            roots=(self.model_dir.resolve() / "embedding",),
         )
         overview = self.build_overview(self.jobs)
 
@@ -219,35 +223,36 @@ class TestEmbeddingAdminComposition(_TempModelDir):
 
     def test_catalog_lists_model_roots_with_guessed_type(self):
         write_model(self.model_dir, "embedding/demo", ["BertModel"])
-        write_model(self.model_dir, "reranker/demo-rr", ["XLMRobertaForSequenceClassification"])
-        write_model(self.model_dir, "Qwen3-Reranker-0.6B", ["Qwen3ForCausalLM"])
-        write_model(self.model_dir, "adapters/lora", filename="adapter_config.json")
+        write_model(self.model_dir, "embedding/demo-rr", ["XLMRobertaForSequenceClassification"])
+        write_model(self.model_dir, "embedding/Qwen3-Reranker-0.6B", ["Qwen3ForCausalLM"])
+        write_model(self.model_dir, "embedding/adapters/lora", filename="adapter_config.json")
         write_model(self.model_dir, ".cache/x")
         write_model(self.model_dir, "embedding/demo/1_Pooling")
+        write_model(self.model_dir, "stt/qwen3-asr/qwen3-asr-0.6b", ["Qwen3ASRForConditionalGeneration"])
         listing = self.client.get("/admin/models").json()
         self.assertEqual(listing["capabilities"], {"download": True, "load": True, "unload": True, "cancel": False})
         self.assertEqual(listing["columns"], [{"key": "type", "label": "type", "kind": "text"}])
         rows = {row["local_name"]: row for row in listing["items"]}
-        self.assertEqual(set(rows), {"embedding/demo", "reranker/demo-rr", "Qwen3-Reranker-0.6B", "adapters/lora"})
+        self.assertEqual(set(rows), {"embedding/demo", "embedding/demo-rr", "embedding/Qwen3-Reranker-0.6B", "embedding/adapters/lora"})
         self.assertEqual(rows["embedding/demo"]["extra"]["type"], "embedding")
-        self.assertEqual(rows["reranker/demo-rr"]["extra"]["type"], "reranker")
-        self.assertEqual(rows["Qwen3-Reranker-0.6B"]["extra"]["type"], "reranker")
-        self.assertEqual(rows["adapters/lora"]["extra"]["type"], "embedding")
+        self.assertEqual(rows["embedding/demo-rr"]["extra"]["type"], "reranker")
+        self.assertEqual(rows["embedding/Qwen3-Reranker-0.6B"]["extra"]["type"], "reranker")
+        self.assertEqual(rows["embedding/adapters/lora"]["extra"]["type"], "embedding")
         self.assertTrue(all(row["status"] == "installed" and row["loaded"] is False for row in rows.values()))
         self.assertGreater(rows["embedding/demo"]["size_bytes"], 0)
         # cancel capability is off, so the cancel route is not registered.
         self.assertEqual(self.client.post("/admin/models/downloads/x/cancel").status_code, 404)
 
     def test_load_uses_the_guessed_type_and_unload_of_not_loaded_is_409(self):
-        write_model(self.model_dir, "reranker/demo-rr", ["XLMRobertaForSequenceClassification"])
-        self.assertEqual(self.client.post("/admin/models/reranker/demo-rr/unload").status_code, 409)
-        response = self.client.post("/admin/models/reranker/demo-rr/load")
+        write_model(self.model_dir, "embedding/demo-rr", ["XLMRobertaForSequenceClassification"])
+        self.assertEqual(self.client.post("/admin/models/embedding/demo-rr/unload").status_code, 409)
+        response = self.client.post("/admin/models/embedding/demo-rr/load")
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(self.load_calls, [("reranker/demo-rr", "reranker")])
+        self.assertEqual(self.load_calls, [("embedding/demo-rr", "reranker")])
         self.assertTrue(self.client.get("/admin/models").json()["items"][0]["loaded"])
-        self.assertEqual(self.client.post("/admin/models/reranker/demo-rr/load").status_code, 200)
+        self.assertEqual(self.client.post("/admin/models/embedding/demo-rr/load").status_code, 200)
         self.assertEqual(len(self.load_calls), 1)  # already loaded: no second load
-        self.assertEqual(self.client.post("/admin/models/reranker/demo-rr/unload").status_code, 200)
+        self.assertEqual(self.client.post("/admin/models/embedding/demo-rr/unload").status_code, 200)
         self.assertEqual(self.loaded, {})
 
     def test_load_refuses_unknown_names_and_partial_downloads(self):
@@ -412,9 +417,9 @@ class TestEmbeddingAdminComposition(_TempModelDir):
         self.assertEqual(set(self.actions(harrier)), {"load", "unload"})
         self.assertTrue(self.actions(harrier)["load"]["primary"])
         self.assertFalse(items["embedding/Qwen3-Reranker-0.6B"]["lifecycle"]["downloaded"])
-        # The classic listing keeps its unscoped behaviour.
+        # The classic listing uses the same roots: no stt models or HF caches.
         listed = {row["local_name"] for row in self.client.get("/admin/models").json()["items"]}
-        self.assertIn("stt/onnx-whisper", listed)
+        self.assertEqual(listed, {"embedding/harrier-oss-v1-0.6b", "embedding/my-qwen3-reranker"})
 
     def test_overview_present_without_config_is_unverified_and_not_downloadable(self):
         name = "embedding/ruri-v3-310m"

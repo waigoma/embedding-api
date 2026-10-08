@@ -30,7 +30,7 @@ from pydantic import BaseModel
 
 from admin_shell.admin.download_jobs import DownloadJobRegistry
 from admin_shell.admin.hf_download import HfSnapshotDownloader
-from embedding_admin import build_catalog, find_model_roots, mount_admin, v1_download_errors
+from embedding_admin import build_catalog, find_model_roots_under, mount_admin, v1_download_errors
 from embedding_overview import build_overview, parse_roots
 
 logging.basicConfig(level=logging.INFO)
@@ -156,9 +156,14 @@ def _model_local_path(model_id: str) -> str:
 
 
 def _iter_local_model_relative_ids() -> list[str]:
-    """List model roots (config.json / adapter_config.json), excluding cache/hidden dirs."""
+    """Model roots (config.json / adapter_config.json) under ADMIN_MODEL_ROOTS only.
+
+    MODEL_DIR is shared with stt / tts and HF caches; listing all of it offered models
+    this server cannot load as embeddings or rerankers.
+    """
     root = Path(MODEL_DIR)
-    return [path.relative_to(root).as_posix() for path in find_model_roots(root)]
+    roots = parse_roots(ADMIN_MODEL_ROOTS, root)
+    return [path.relative_to(root.resolve()).as_posix() for path in find_model_roots_under(root.resolve(), roots)]
 
 
 def _resolve_path(model_id: str) -> str:
@@ -470,6 +475,7 @@ def new_admin_catalog(model_dir: str, jobs: DownloadJobRegistry):
         loaded_names=lambda: _loaded_names(),
         loader=lambda model_id, model_type: _load_into_registry(model_id, model_type),
         unloader=lambda model_id: _unload(model_id),
+        roots=parse_roots(ADMIN_MODEL_ROOTS, Path(model_dir)),
     )
 
 
@@ -485,12 +491,12 @@ def new_admin_overview(model_dir: str, jobs: DownloadJobRegistry):
     )
 
 
+# ADMIN_MODEL_ROOTS (relative to MODEL_DIR, default "embedding") scopes every model listing:
+# /v1/models, /models, /admin/models and the overview. Explicit loads by name are unchanged.
+ADMIN_MODEL_ROOTS = os.environ.get("ADMIN_MODEL_ROOTS", "")
 # /v1/models/download* read this global at call time (tests swap it for a temp MODEL_DIR).
 admin_download_jobs = new_download_jobs()
 admin_catalog = new_admin_catalog(MODEL_DIR, admin_download_jobs)
-# ADMIN_MODEL_ROOTS (relative to MODEL_DIR, default "embedding") scopes the model overview;
-# it shares the download ledger with the catalog above.
-ADMIN_MODEL_ROOTS = os.environ.get("ADMIN_MODEL_ROOTS", "")
 admin_overview = new_admin_overview(MODEL_DIR, admin_download_jobs)
 admin_hub = mount_admin(
     app, catalog=admin_catalog, overview=admin_overview, logs=lambda limit: _recent_inference_logs(limit),

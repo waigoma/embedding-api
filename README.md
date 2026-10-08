@@ -132,9 +132,10 @@ export SENTENCE_TRANSFORMER_KWARGS='{"model_kwargs":{"attn_implementation":"flas
 そのため、モデルを保存する `/models` は書き込み可能である必要があります (`:rw`)。
 private / gated model を落とす場合は `HF_TOKEN` を設定してください。
 
-一覧は環境変数 `ADMIN_MODEL_ROOTS` (`MODEL_DIR` からの相対パス、カンマ区切り、絶対パス可。
-既定 `embedding`) の配下に限ります。別用途のモデル (`stt/` など) や HF cache は表示しません。
-`GET /admin/models` (従来の一覧) は `MODEL_DIR` 全体を返すままです。
+モデルの一覧は環境変数 `ADMIN_MODEL_ROOTS` (`MODEL_DIR` からの相対パス、カンマ区切り、絶対パス可。
+既定 `embedding`) の配下に限ります。対象は管理画面、`GET /admin/models`、公開 API の
+`GET /v1/models` と `GET /models` のすべてです。別用途のモデル (`stt/` など) や HF cache は返しません。
+名前を指定したロード (`/v1/models/load` など) の挙動は変わりません。
 
 ### 起動後に開く URL
 
