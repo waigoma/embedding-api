@@ -62,16 +62,18 @@ def fake_entry(model_type="embedding"):
 def setup():
     for name, arch in [
         ("embedding/ruri-v3-310m", "ModernBertModel"),
-        ("Qwen3-Embedding-0.6B", "Qwen3Model"),
-        ("reranker/synthetic", "XLMRobertaForSequenceClassification"),
-        ("synthetic/<img onerror=alert(1)>", "BertModel"),
+        ("embedding/Qwen3-Embedding-0.6B", "Qwen3Model"),
+        ("embedding/synthetic-reranker", "XLMRobertaForSequenceClassification"),
+        ("embedding/<img onerror=alert(1)>", "BertModel"),
+        # Outside ADMIN_MODEL_ROOTS (default "embedding"): the overview must not list it.
+        ("stt/onnx-whisper", "WhisperModel"),
     ]:
         path = Path(model_dir.name) / name
         path.mkdir(parents=True, exist_ok=True)
         (path / "config.json").write_text('{"architectures": ["%s"]}' % arch)
     server.registry["embedding/ruri-v3-310m"] = fake_entry()
     # A failed job over an existing directory: the admin load must refuse it.
-    server.admin_catalog.start_download("Qwen/fail-reranker", "reranker/synthetic", True)
+    server.admin_catalog.start_download("Qwen/fail-reranker", "embedding/synthetic-reranker", True)
 
 
 server._startup_once = lambda: None

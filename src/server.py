@@ -31,6 +31,7 @@ from pydantic import BaseModel
 from admin_shell.admin.download_jobs import DownloadJobRegistry
 from admin_shell.admin.hf_download import HfSnapshotDownloader
 from embedding_admin import build_catalog, find_model_roots, mount_admin, v1_download_errors
+from embedding_overview import build_overview, parse_roots
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("embedding-server")
@@ -112,12 +113,12 @@ MODEL_CATALOG = _parse_json_list_env(MODEL_CATALOG_JSON, "MODEL_CATALOG_JSON")
 
 if not MODEL_CATALOG:
     MODEL_CATALOG = [
-        {"repo_id": "Qwen/Qwen3-Embedding-0.6B", "type": "embedding"},
-        {"repo_id": "Qwen/Qwen3-Embedding-4B", "type": "embedding"},
-        {"repo_id": "Qwen/Qwen3-Reranker-0.6B", "type": "reranker"},
-        {"repo_id": "Qwen/Qwen3-Reranker-4B", "type": "reranker"},
-        {"repo_id": "cl-nagoya/ruri-v3-310m", "type": "embedding"},
-        {"repo_id": "cl-nagoya/ruri-v3-reranker-310m", "type": "reranker"},
+        {"repo_id": "Qwen/Qwen3-Embedding-0.6B", "family": "Qwen3-Embedding", "type": "embedding"},
+        {"repo_id": "Qwen/Qwen3-Embedding-4B", "family": "Qwen3-Embedding", "type": "embedding"},
+        {"repo_id": "Qwen/Qwen3-Reranker-0.6B", "family": "Qwen3-Reranker", "type": "reranker"},
+        {"repo_id": "Qwen/Qwen3-Reranker-4B", "family": "Qwen3-Reranker", "type": "reranker"},
+        {"repo_id": "cl-nagoya/ruri-v3-310m", "family": "Ruri", "type": "embedding"},
+        {"repo_id": "cl-nagoya/ruri-v3-reranker-310m", "family": "Ruri", "type": "reranker"},
     ]
 
 
@@ -472,10 +473,27 @@ def new_admin_catalog(model_dir: str, jobs: DownloadJobRegistry):
     )
 
 
+def new_admin_overview(model_dir: str, jobs: DownloadJobRegistry):
+    return build_overview(
+        Path(model_dir),
+        jobs=jobs,
+        loaded_names=lambda: _loaded_names(),
+        loader=lambda model_id, model_type: _load_into_registry(model_id, model_type),
+        unloader=lambda model_id: _unload(model_id),
+        catalog_entries=lambda: MODEL_CATALOG,
+        roots=parse_roots(ADMIN_MODEL_ROOTS, Path(model_dir)),
+    )
+
+
 # /v1/models/download* read this global at call time (tests swap it for a temp MODEL_DIR).
-admin_catalog = new_admin_catalog(MODEL_DIR, new_download_jobs())
+admin_download_jobs = new_download_jobs()
+admin_catalog = new_admin_catalog(MODEL_DIR, admin_download_jobs)
+# ADMIN_MODEL_ROOTS (relative to MODEL_DIR, default "embedding") scopes the model overview;
+# it shares the download ledger with the catalog above.
+ADMIN_MODEL_ROOTS = os.environ.get("ADMIN_MODEL_ROOTS", "")
+admin_overview = new_admin_overview(MODEL_DIR, admin_download_jobs)
 admin_hub = mount_admin(
-    app, catalog=admin_catalog, logs=lambda limit: _recent_inference_logs(limit),
+    app, catalog=admin_catalog, overview=admin_overview, logs=lambda limit: _recent_inference_logs(limit),
     health=lambda: admin_health_snapshot(),
 )
 

@@ -20,6 +20,7 @@ COPY src/server.py /app/server.py
 COPY src/download_from_huggingface.py /app/download_from_huggingface.py
 COPY src/admin_shell /app/admin_shell
 COPY src/embedding_admin.py /app/embedding_admin.py
+COPY src/embedding_overview.py /app/embedding_overview.py
 COPY src/static /app/static
 
 EXPOSE 7997
