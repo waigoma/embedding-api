@@ -407,6 +407,8 @@ class TestEmbeddingAdminComposition(_TempModelDir):
         self.assertEqual(harrier["family"], "カタログ外")
         self.assertEqual(harrier["api_name"], "embedding/harrier-oss-v1-0.6b")
         self.assertEqual(items["local:embedding/my-qwen3-reranker"]["family"], "Qwen3-Reranker")
+        self.assertEqual(harrier["version"], "埋め込み")
+        self.assertEqual(items["local:embedding/my-qwen3-reranker"]["version"], "リランカー")
         self.assertEqual(set(self.actions(harrier)), {"load", "unload"})
         self.assertTrue(self.actions(harrier)["load"]["primary"])
         self.assertFalse(items["embedding/Qwen3-Reranker-0.6B"]["lifecycle"]["downloaded"])

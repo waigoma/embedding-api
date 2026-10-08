@@ -198,6 +198,11 @@ class EmbeddingCatalogSource:
         }
 
 
+def local_details(model: LocalModel) -> dict[str, Any]:
+    """カタログ外の行にも scanner が判定した種別 (埋め込み / リランカー) を出す。"""
+    return {"version": TYPE_LABELS.get(str(model.extra.get("type")), "種別未判定")}
+
+
 def build_overview(
     model_dir: Path,
     *,
@@ -232,6 +237,7 @@ def build_overview(
         fetch=FetchForm(name_prefix=prefix, api_name=True, path="models/download"),
         family_of_local=family_by_rules(FAMILY_RULES),
         local_actions=actions.for_local,
+        local_details=local_details,
         load_state=load_state,
         jobs=jobs,
         api_name_for_local=True,

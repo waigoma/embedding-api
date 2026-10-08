@@ -138,6 +138,8 @@ class FilesystemProbe:
 
 
 LocalActions = Callable[[LocalModel, "bool | None"], list[Action]]
+# Extra display keys for a カタログ外 row (version, title, purpose, specs...); id/lifecycle stay.
+LocalDetails = Callable[[LocalModel], Item]
 FamilyOf = Callable[[str], str]
 
 
@@ -164,6 +166,7 @@ class ModelOverviewService:
     fetch: FetchForm | None = None
     family_of_local: FamilyOf = field(default=family_by_rules(()))
     local_actions: LocalActions | None = None
+    local_details: LocalDetails | None = None
     load_state: LoadStateProvider | None = None
     jobs: JobLedger | None = None
     api_name_for_local: bool = False
@@ -195,6 +198,7 @@ class ModelOverviewService:
             step_keys=[step.key for step in self.steps],
             family_of_local=self.family_of_local,
             local_actions=self.local_actions,
+            local_details=self.local_details,
             loaded=loaded,
             api_name_for_local=self.api_name_for_local,
             probe=self.probe,
@@ -230,6 +234,7 @@ def merge_overview(
     step_keys: list[str],
     family_of_local: FamilyOf,
     local_actions: LocalActions | None,
+    local_details: LocalDetails | None = None,
     loaded: set[str] | None,
     api_name_for_local: bool,
     probe: PathProbe,
@@ -272,6 +277,9 @@ def merge_overview(
         item = _local_item(model, local_paths[model.local_name], family_of_local, is_loaded)
         if api_name_for_local:
             item["api_name"] = model.local_name
+        if local_details is not None:
+            protected = {"id", "lifecycle", "support", "local_name", "paths"}
+            item.update({k: v for k, v in local_details(model).items() if k not in protected})
         if local_actions is not None:
             item["actions"] = local_actions(model, is_loaded)
         normalized = _normalize(item, step_keys)
