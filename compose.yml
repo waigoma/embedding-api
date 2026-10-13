@@ -19,9 +19,11 @@ services:
       # --- Device mode: auto|cpu|gpu|cuda ---
       - DEVICE_MODE=${DEVICE_MODE:-auto}
       # Optional JSON kwargs for SentenceTransformer/CrossEncoder.
-      # Example: {"model_kwargs":{"attn_implementation":"flash_attention_2","torch_dtype":"float16"}}
+      # Example: {"model_kwargs":{"dtype":"bfloat16"}} (Gemma does not support float16)
       - SENTENCE_TRANSFORMER_KWARGS=${SENTENCE_TRANSFORMER_KWARGS:-}
       - CROSS_ENCODER_KWARGS=${CROSS_ENCODER_KWARGS:-}
+      - MODEL_CATALOG_JSON=${MODEL_CATALOG_JSON:-}
+      - ADMIN_MODEL_ROOTS=${ADMIN_MODEL_ROOTS:-embedding}
       # Optional token for private/gated HF models.
       - HF_TOKEN=${HF_TOKEN:-}
 

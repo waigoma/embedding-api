@@ -1,0 +1,489 @@
+[
+  {
+    "status": "passed",
+    "repo_id": "Alibaba-NLP/gte-multilingual-base",
+    "local_name": "embedding/gte-multilingual-base",
+    "revision": "9bbca17d9273fd0d03d5725c7a4b0f6b45142062",
+    "versions": {
+      "torch": "2.11.0+cu130",
+      "sentence-transformers": "6.1.0",
+      "transformers": "5.19.0",
+      "huggingface_hub": "1.33.0"
+    },
+    "device": "cuda",
+    "dimensions": 768,
+    "scores": [
+      0.9260875824718703,
+      0.36322801947635197
+    ],
+    "truncated_dimensions": 128,
+    "norms": {
+      "query": [
+        0.9999999999999999
+      ],
+      "documents": [
+        1.0,
+        0.9999999999999999
+      ],
+      "truncated": [
+        1.0
+      ]
+    }
+  },
+  {
+    "status": "passed",
+    "repo_id": "BAAI/bge-m3",
+    "local_name": "embedding/bge-m3",
+    "revision": "5617a9f61b028005a4858fdac845db406aefb181",
+    "versions": {
+      "torch": "2.11.0+cu130",
+      "sentence-transformers": "6.1.0",
+      "transformers": "5.19.0",
+      "huggingface_hub": "1.33.0"
+    },
+    "device": "cuda",
+    "dimensions": 1024,
+    "scores": [
+      0.8017380492840801,
+      0.29540628615743647
+    ],
+    "truncated_dimensions": 128,
+    "norms": {
+      "query": [
+        1.0
+      ],
+      "documents": [
+        1.0,
+        1.0
+      ],
+      "truncated": [
+        1.0
+      ]
+    }
+  },
+  {
+    "status": "passed",
+    "repo_id": "BAAI/bge-reranker-v2-m3",
+    "local_name": "embedding/bge-reranker-v2-m3",
+    "revision": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+    "versions": {
+      "torch": "2.11.0+cu130",
+      "sentence-transformers": "6.1.0",
+      "transformers": "5.19.0",
+      "huggingface_hub": "1.33.0"
+    },
+    "device": "cuda",
+    "scores": [
+      0.9997546076774597,
+      1.5689549400121905e-05
+    ]
+  },
+  {
+    "status": "passed",
+    "repo_id": "Qwen/Qwen3-Embedding-0.6B",
+    "local_name": "embedding/Qwen3-Embedding-0.6B",
+    "revision": "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3",
+    "versions": {
+      "torch": "2.11.0+cu130",
+      "sentence-transformers": "6.1.0",
+      "transformers": "5.19.0",
+      "huggingface_hub": "1.33.0"
+    },
+    "device": "cuda",
+    "dimensions": 1024,
+    "scores": [
+      0.7476337050190494,
+      0.13554673986949992
+    ],
+    "truncated_dimensions": 128,
+    "norms": {
+      "query": [
+        1.0
+      ],
+      "documents": [
+        1.0,
+        1.0
+      ],
+      "truncated": [
+        1.0
+      ]
+    }
+  },
+  {
+    "status": "passed",
+    "repo_id": "Qwen/Qwen3-Reranker-0.6B",
+    "local_name": "embedding/Qwen3-Reranker-0.6B",
+    "revision": "e61197ed45024b0ed8a2d74b80b4d909f1255473",
+    "versions": {
+      "torch": "2.11.0+cu130",
+      "sentence-transformers": "6.1.0",
+      "transformers": "5.19.0",
+      "huggingface_hub": "1.33.0"
+    },
+    "device": "cuda",
+    "scores": [
+      6.0625,
+      -10.4375
+    ]
+  },
+  {
+    "status": "passed",
+    "repo_id": "cl-nagoya/ruri-v3-310m",
+    "local_name": "embedding/ruri-v3-310m",
+    "revision": null,
+    "versions": {
+      "torch": "2.11.0+cu130",
+      "sentence-transformers": "6.1.0",
+      "transformers": "5.19.0",
+      "huggingface_hub": "1.33.0"
+    },
+    "device": "cuda",
+    "dimensions": 768,
+    "scores": [
+      0.9619691833760251,
+      0.7757514982713118
+    ],
+    "truncated_dimensions": 128,
+    "norms": {
+      "query": [
+        1.0000000000000002
+      ],
+      "documents": [
+        0.9999999999999999,
+        1.0000000000000002
+      ],
+      "truncated": [
+        0.9999999999999999
+      ]
+    }
+  },
+  {
+    "status": "passed",
+    "repo_id": "google/embeddinggemma-2",
+    "local_name": "embedding/embeddinggemma-2",
+    "revision": "914f7f89142e33e77833254d9c9b90c3cef7303b",
+    "versions": {
+      "torch": "2.11.0+cu130",
+      "sentence-transformers": "6.1.0",
+      "transformers": "5.19.0",
+      "huggingface_hub": "1.33.0"
+    },
+    "device": "cuda",
+    "dimensions": 768,
+    "scores": [
+      0.8578259485590655,
+      0.5683567054248808
+    ],
+    "truncated_dimensions": 128,
+    "norms": {
+      "query": [
+        1.0
+      ],
+      "documents": [
+        1.0,
+        1.0
+      ],
+      "truncated": [
+        0.9999999999999999
+      ]
+    }
+  },
+  {
+    "status": "passed",
+    "repo_id": "hotchpotch/bekko-embedding-v1-a8m",
+    "local_name": "embedding/bekko-embedding-v1-a8m",
+    "revision": "c721113d59a1d91b447450324f51c4b3332c924a",
+    "versions": {
+      "torch": "2.11.0+cu130",
+      "sentence-transformers": "6.1.0",
+      "transformers": "5.19.0",
+      "huggingface_hub": "1.33.0"
+    },
+    "device": "cuda",
+    "dimensions": 384,
+    "scores": [
+      0.7068276887739943,
+      0.033705305470937724
+    ],
+    "truncated_dimensions": 128,
+    "norms": {
+      "query": [
+        0.9999999999999999
+      ],
+      "documents": [
+        0.9999999999999999,
+        1.0
+      ],
+      "truncated": [
+        1.0
+      ]
+    }
+  },
+  {
+    "status": "passed",
+    "repo_id": "ibm-granite/granite-embedding-97m-multilingual-r2",
+    "local_name": "embedding/granite-embedding-97m-multilingual-r2",
+    "revision": "835ad14087e140460703cf0fae09f97d469d65c2",
+    "versions": {
+      "torch": "2.11.0+cu130",
+      "sentence-transformers": "6.1.0",
+      "transformers": "5.19.0",
+      "huggingface_hub": "1.33.0"
+    },
+    "device": "cuda",
+    "dimensions": 384,
+    "scores": [
+      0.9657830227214249,
+      0.728280636060657
+    ],
+    "truncated_dimensions": 128,
+    "norms": {
+      "query": [
+        1.0
+      ],
+      "documents": [
+        1.0,
+        1.0
+      ],
+      "truncated": [
+        0.9999999999999999
+      ]
+    }
+  },
+  {
+    "status": "passed",
+    "repo_id": "intfloat/multilingual-e5-large-instruct",
+    "local_name": "embedding/multilingual-e5-large-instruct",
+    "revision": "274baa43b0e13e37fafa6428dbc7938e62e5c439",
+    "versions": {
+      "torch": "2.11.0+cu130",
+      "sentence-transformers": "6.1.0",
+      "transformers": "5.19.0",
+      "huggingface_hub": "1.33.0"
+    },
+    "device": "cuda",
+    "dimensions": 1024,
+    "scores": [
+      0.9118205675132524,
+      0.7062075882946667
+    ],
+    "truncated_dimensions": 128,
+    "norms": {
+      "query": [
+        1.0
+      ],
+      "documents": [
+        1.0,
+        0.9999999999999999
+      ],
+      "truncated": [
+        1.0
+      ]
+    }
+  },
+  {
+    "status": "passed",
+    "repo_id": "jinaai/jina-embeddings-v5-text-nano",
+    "local_name": "embedding/jina-embeddings-v5-text-nano",
+    "revision": "8a7f00aac812071b69403df470f1038ec85f8925",
+    "versions": {
+      "torch": "2.11.0+cu130",
+      "sentence-transformers": "6.1.0",
+      "transformers": "5.19.0",
+      "huggingface_hub": "1.33.0"
+    },
+    "device": "cuda",
+    "dimensions": 768,
+    "scores": [
+      0.8027162091998843,
+      0.06678766144883469
+    ],
+    "truncated_dimensions": 128,
+    "norms": {
+      "query": [
+        1.0
+      ],
+      "documents": [
+        1.0,
+        1.0
+      ],
+      "truncated": [
+        0.9999999999999999
+      ]
+    }
+  },
+  {
+    "status": "passed",
+    "repo_id": "microsoft/harrier-oss-v1-0.6b",
+    "local_name": "embedding/harrier-oss-v1-0.6b",
+    "revision": null,
+    "versions": {
+      "torch": "2.11.0+cu130",
+      "sentence-transformers": "6.1.0",
+      "transformers": "5.19.0",
+      "huggingface_hub": "1.33.0"
+    },
+    "device": "cuda",
+    "dimensions": 1024,
+    "scores": [
+      0.6920148181197874,
+      0.384702635492431
+    ],
+    "truncated_dimensions": 128
+  },
+  {
+    "status": "passed",
+    "repo_id": "nvidia/Nemotron-3-Embed-1B-BF16",
+    "local_name": "embedding/Nemotron-3-Embed-1B-BF16",
+    "revision": "c0c9fea93ea424587517f2c59e20db9f1d6bf615",
+    "versions": {
+      "torch": "2.11.0+cu130",
+      "sentence-transformers": "6.1.0",
+      "transformers": "5.19.0",
+      "huggingface_hub": "1.33.0"
+    },
+    "device": "cuda",
+    "dimensions": 2048,
+    "scores": [
+      0.5556916260831117,
+      0.008739785370451676
+    ],
+    "truncated_dimensions": 128,
+    "norms": {
+      "query": [
+        1.0
+      ],
+      "documents": [
+        1.0,
+        1.0
+      ],
+      "truncated": [
+        1.0
+      ]
+    }
+  },
+  {
+    "status": "passed",
+    "repo_id": "perplexity-ai/pplx-embed-v1-0.6b",
+    "local_name": "embedding/pplx-embed-v1-0.6b",
+    "revision": "2c4d510dd4a732063c31a0f70193e35067b51fd8",
+    "versions": {
+      "torch": "2.11.0+cu130",
+      "sentence-transformers": "6.1.0",
+      "transformers": "5.19.0",
+      "huggingface_hub": "1.33.0"
+    },
+    "device": "cuda",
+    "dimensions": 1024,
+    "scores": [
+      0.8008696588030955,
+      0.123236558086294
+    ],
+    "truncated_dimensions": 128,
+    "norms": {
+      "query": [
+        0.9999999999999999
+      ],
+      "documents": [
+        1.0,
+        1.0
+      ],
+      "truncated": [
+        1.0
+      ]
+    }
+  },
+  {
+    "status": "passed",
+    "repo_id": "pfnet/plamo-embedding-1b",
+    "local_name": "embedding/plamo-embedding-1b",
+    "revision": "f47268047fb3df74113675700c1e9dacdc68cb47",
+    "versions": {
+      "torch": "2.11.0+cu130",
+      "sentence-transformers": "6.1.0",
+      "transformers": "5.19.0",
+      "huggingface_hub": "1.33.0"
+    },
+    "device": "cuda",
+    "dimensions": 2048,
+    "scores": [
+      0.8929938904487875,
+      0.5512411329283184
+    ],
+    "truncated_dimensions": 128,
+    "norms": {
+      "query": [
+        1.0
+      ],
+      "documents": [
+        1.0,
+        1.0
+      ],
+      "truncated": [
+        1.0
+      ]
+    }
+  },
+  {
+    "status": "passed",
+    "repo_id": "sbintuitions/sarashina-embedding-v2-1b",
+    "local_name": "embedding/sarashina-embedding-v2-1b",
+    "revision": "1f3408afaa7b617e3445d891310a9c26dd0c68a5",
+    "versions": {
+      "torch": "2.11.0+cu130",
+      "sentence-transformers": "6.1.0",
+      "transformers": "5.19.0",
+      "huggingface_hub": "1.33.0"
+    },
+    "device": "cuda",
+    "dimensions": 1792,
+    "scores": [
+      0.8826086591658706,
+      0.7111542420812026
+    ],
+    "truncated_dimensions": 128,
+    "norms": {
+      "query": [
+        1.0
+      ],
+      "documents": [
+        1.0,
+        0.9999999999999999
+      ],
+      "truncated": [
+        0.9999999999999999
+      ]
+    }
+  },
+  {
+    "status": "passed",
+    "repo_id": "voyageai/voyage-4-nano",
+    "local_name": "embedding/voyage-4-nano",
+    "revision": "67fabc9bef010dabc5f6024aa1b1b6b93410426f",
+    "versions": {
+      "torch": "2.11.0+cu130",
+      "sentence-transformers": "6.1.0",
+      "transformers": "5.19.0",
+      "huggingface_hub": "1.33.0"
+    },
+    "device": "cuda",
+    "dimensions": 2048,
+    "scores": [
+      0.6232052776552307,
+      0.1631352116319374
+    ],
+    "truncated_dimensions": 128,
+    "norms": {
+      "query": [
+        0.9999999999999999
+      ],
+      "documents": [
+        1.0,
+        1.0
+      ],
+      "truncated": [
+        1.0
+      ]
+    }
+  }
+]

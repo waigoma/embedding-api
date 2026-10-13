@@ -98,7 +98,13 @@ def find_model_roots(root: Path) -> list[Path]:
 
 
 def guess_model_type(directory: Path) -> str:
-    """Decide embedding vs reranker from config.json architectures, then the directory name."""
+    """公式 ST の model_type、config architectures、保存名の順で種別を推定する。"""
+    try:
+        st_config = json.loads((directory / "config_sentence_transformers.json").read_text(encoding="utf-8"))
+        if st_config.get("model_type") == "CrossEncoder":
+            return "reranker"
+    except (OSError, ValueError, AttributeError):
+        pass
     try:
         config = json.loads((directory / "config.json").read_text(encoding="utf-8"))
         architectures = config.get("architectures") or []

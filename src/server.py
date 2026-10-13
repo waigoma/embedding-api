@@ -16,6 +16,8 @@ import uuid
 import asyncio
 import base64
 import struct
+import math
+from copy import deepcopy
 import urllib.request
 import urllib.error
 from contextlib import asynccontextmanager
@@ -32,6 +34,7 @@ from admin_shell.admin.download_jobs import DownloadJobRegistry
 from admin_shell.admin.hf_download import HfSnapshotDownloader
 from embedding_admin import build_catalog, find_model_roots_under, mount_admin, v1_download_errors
 from embedding_overview import build_overview, parse_roots
+from model_profiles import InputType, ModelProfile, PROFILES, encode_options, local_profile_for, profile_for
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("embedding-server")
@@ -112,14 +115,7 @@ RERANKER_KWARGS = _parse_json_env(CROSS_ENCODER_KWARGS, "CROSS_ENCODER_KWARGS")
 MODEL_CATALOG = _parse_json_list_env(MODEL_CATALOG_JSON, "MODEL_CATALOG_JSON")
 
 if not MODEL_CATALOG:
-    MODEL_CATALOG = [
-        {"repo_id": "Qwen/Qwen3-Embedding-0.6B", "family": "Qwen3-Embedding", "type": "embedding"},
-        {"repo_id": "Qwen/Qwen3-Embedding-4B", "family": "Qwen3-Embedding", "type": "embedding"},
-        {"repo_id": "Qwen/Qwen3-Reranker-0.6B", "family": "Qwen3-Reranker", "type": "reranker"},
-        {"repo_id": "Qwen/Qwen3-Reranker-4B", "family": "Qwen3-Reranker", "type": "reranker"},
-        {"repo_id": "cl-nagoya/ruri-v3-310m", "family": "Ruri", "type": "embedding"},
-        {"repo_id": "cl-nagoya/ruri-v3-reranker-310m", "family": "Ruri", "type": "reranker"},
-    ]
+    MODEL_CATALOG = [profile.catalog_entry() for profile in PROFILES]
 
 
 class ModelEntry:
@@ -236,11 +232,17 @@ def _encode_embeddings(
     model_id: str,
     inputs: list[str],
     dimensions: Optional[int] = None,
+    input_type: InputType = "query",
 ) -> tuple[list[list[float]], int]:
     entry = _get_model(model_id, "embedding")
 
     if dimensions is not None:
         max_dim = entry.model.get_sentence_embedding_dimension()
+        profile = _model_profile(model_id)
+        if max_dim is None and profile and profile.dimension_fallback == "profile":
+            max_dim = profile.dimensions
+        if max_dim is None:
+            raise HTTPException(400, "model does not report an embedding dimension")
         if not (1 <= dimensions <= max_dim):
             raise HTTPException(
                 400,
@@ -248,14 +250,15 @@ def _encode_embeddings(
             )
 
     encode_kwargs: dict[str, Any] = {"convert_to_numpy": True, "normalize_embeddings": True}
-    if "query" in getattr(entry.model, "prompts", {}):
-        encode_kwargs["prompt_name"] = "query"
+    encode_kwargs.update(encode_options(_model_profile(model_id), getattr(entry.model, "prompts", {}), input_type))
 
     if dimensions is not None:
         try:
             vectors = entry.model.encode(inputs, truncate_dim=dimensions, **encode_kwargs)
             embeddings = [vec.tolist() for vec in vectors]
-        except TypeError:
+        except TypeError as exc:
+            if "truncate_dim" not in str(exc):
+                raise
             # truncate_dim not supported by this version; slice after encoding
             vectors = entry.model.encode(inputs, **encode_kwargs)
             embeddings = [vec[:dimensions].tolist() for vec in vectors]
@@ -263,10 +266,21 @@ def _encode_embeddings(
         vectors = entry.model.encode(inputs, **encode_kwargs)
         embeddings = [vec.tolist() for vec in vectors]
 
+    if dimensions is not None and any(len(vector) != dimensions for vector in embeddings):
+        raise HTTPException(500, "model did not return the requested embedding dimension")
+    if any(not math.isfinite(value) for vector in embeddings for value in vector):
+        raise HTTPException(500, "model returned non-finite embeddings; check model precision")
+    # custom module の量子化や BF16、truncate の順序による誤差を API 境界で補正する。
+    embeddings = [_normalize_vector(vector) for vector in embeddings]
     if embeddings:
         entry.mark_inference()
     tokens = sum(len(s) // 4 for s in inputs)
     return embeddings, tokens
+
+
+def _normalize_vector(vector: list[float]) -> list[float]:
+    length = math.hypot(*vector)
+    return [value / length for value in vector] if length else vector
 
 
 def _proxy_chat_completions(payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
@@ -299,15 +313,54 @@ def _proxy_chat_completions(payload: dict[str, Any]) -> tuple[int, dict[str, Any
         raise HTTPException(502, f"failed to reach chat backend: {exc}") from exc
 
 
+def _model_profile(model_id: str) -> ModelProfile | None:
+    profile = profile_for(model_id, MODEL_CATALOG)
+    if profile is None and os.path.isdir(_resolve_path(model_id)):
+        profile = local_profile_for(model_id, MODEL_CATALOG)
+    return profile
+
+
 def _load_embedding(model_id: str) -> ModelEntry:
     from sentence_transformers import SentenceTransformer
     path = _resolve_path(model_id)
     logger.info(f"Loading embedding: {model_id} from {path}")
-    kwargs = dict(EMBEDDING_KWARGS)
+    profile = _model_profile(model_id)
+    if profile and profile.model_type != "embedding":
+        raise HTTPException(400, f"'{model_id}' is a reranker, not an embedding model")
+    kwargs = _embedding_load_options(profile, EMBEDDING_KWARGS)
     kwargs.setdefault("device", DEVICE)
-    model = SentenceTransformer(path, **kwargs)
+    kwargs.setdefault("token", HF_TOKEN)
+    if profile and profile.engine == "plamo":
+        from plamo_embedding import PlamoEmbedding
+        model = PlamoEmbedding(path, **kwargs)
+    else:
+        model = SentenceTransformer(path, **kwargs)
+    if profile and profile.compatibility == "voyage_mask":
+        from voyage_compat import configure_voyage_mask
+        configure_voyage_mask(model)
+    if profile and profile.compatibility == "gte_buffers":
+        from gte_compat import initialize_gte_buffers
+        initialize_gte_buffers(model)
     logger.info(f"Loaded embedding: {model_id} (dim={model.get_sentence_embedding_dimension()})")
     return ModelEntry(model, "embedding")
+
+
+def _embedding_load_options(profile: ModelProfile | None, overrides: dict[str, Any]) -> dict[str, Any]:
+    options = deepcopy(profile.load_kwargs) if profile else {}
+    for key, value in overrides.items():
+        if key in {"model_kwargs", "config_kwargs", "tokenizer_kwargs"}:
+            options[key] = dict(options.get(key, {})) | value
+        else:
+            options[key] = value
+    if profile and profile.precision_policy == "bf16_or_fp32":
+        model_options = dict(options.get("model_kwargs", {}))
+        for key in ("dtype", "torch_dtype"):
+            if str(model_options.get(key, "")).lower() in {"float16", "torch.float16", "fp16", "half", "torch.half"}:
+                raise HTTPException(400, "EmbeddingGemma requires bfloat16 or float32; float16 produces invalid embeddings")
+        if not any(key in model_options for key in ("dtype", "torch_dtype")):
+            model_options["dtype"] = "bfloat16" if DEVICE == "cuda" and torch.cuda.is_bf16_supported() else "float32"
+        options["model_kwargs"] = model_options
+    return options
 
 
 def _load_reranker(model_id: str) -> ModelEntry:
@@ -315,7 +368,11 @@ def _load_reranker(model_id: str) -> ModelEntry:
     path = _resolve_path(model_id)
     logger.info(f"Loading reranker: {model_id} from {path}")
     kwargs = dict(RERANKER_KWARGS)
+    profile = _model_profile(model_id)
+    if profile and profile.model_type != "reranker":
+        raise HTTPException(400, f"'{model_id}' is an embedding model, not a reranker")
     kwargs.setdefault("device", DEVICE)
+    kwargs.setdefault("token", HF_TOKEN)
     model = CrossEncoder(path, **kwargs)
     logger.info(f"Loaded reranker: {model_id}")
     return ModelEntry(model, "reranker")
@@ -506,10 +563,13 @@ admin_hub = mount_admin(
 
 # --- Schemas ---
 class EmbeddingRequest(BaseModel):
+    """テキストを埋め込む。input_type 省略時は既存の query 側 prefix を維持する。"""
+
     model: str
     input: str | list[str]
     encoding_format: Literal["float", "base64"] = "float"
     dimensions: Optional[int] = None
+    input_type: InputType = "query"
 
 
 def _format_embedding_output(vec: list[float], fmt: Literal["float", "base64"]) -> list[float] | str:
@@ -531,8 +591,11 @@ class EmbeddingResponse(BaseModel):
 
 
 class ResponsesEmbeddingRequest(BaseModel):
+    """既存の Responses テキスト入力に query / document の任意指定を追加する。"""
+
     model: str
     input: Any
+    input_type: InputType = "query"
 
 
 class ChatCompletionsRequest(BaseModel):
@@ -718,7 +781,7 @@ async def create_embeddings(request: EmbeddingRequest):
     t0 = time.time()
     inputs = request.input if isinstance(request.input, list) else [request.input]
     try:
-        embeddings, tokens = _encode_embeddings(request.model, inputs, request.dimensions)
+        embeddings, tokens = _encode_embeddings(request.model, inputs, request.dimensions, request.input_type)
         fmt = request.encoding_format
         data = [
             EmbeddingData(embedding=_format_embedding_output(emb, fmt), index=i)
@@ -770,7 +833,7 @@ async def create_responses_embedding(request: ResponsesEmbeddingRequest):
             "input must include text. Supported formats: string, list[string], or Responses API message input.",
         )
     try:
-        embeddings, tokens = _encode_embeddings(request.model, inputs)
+        embeddings, tokens = _encode_embeddings(request.model, inputs, input_type=request.input_type)
         _append_inference_log(
             event="responses_embedding",
             model_id=request.model,
