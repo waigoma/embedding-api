@@ -188,7 +188,7 @@ class EmbeddingCatalogSource:
             "purpose": TYPE_PURPOSES.get(model_type, ""),
             "support": "adapter",
             "source": f"https://huggingface.co/{repo_id}",
-            "license": None,
+            "license": entry.get("license"),
             "local_name": local_name,
             "api_name": local_name,
             "paths": [target],

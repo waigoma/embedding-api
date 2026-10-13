@@ -21,6 +21,11 @@ COPY src/download_from_huggingface.py /app/download_from_huggingface.py
 COPY src/admin_shell /app/admin_shell
 COPY src/embedding_admin.py /app/embedding_admin.py
 COPY src/embedding_overview.py /app/embedding_overview.py
+COPY src/model_profiles.py /app/model_profiles.py
+COPY src/plamo_embedding.py /app/plamo_embedding.py
+COPY src/plamo_tokenizer_compat.py /app/plamo_tokenizer_compat.py
+COPY src/voyage_compat.py /app/voyage_compat.py
+COPY src/gte_compat.py /app/gte_compat.py
 COPY src/static /app/static
 
 EXPOSE 7997

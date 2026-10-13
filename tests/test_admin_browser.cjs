@@ -39,7 +39,16 @@ const SIDEBAR = ['▦ モデル管理', '▷ Playground', '📊 Inference Logs',
       await page.getByRole('button', {name: SIDEBAR[0]}).click();
       await modelRow('Qwen3-Embedding-4B').waitFor();
       for (const name of ['Qwen3-Embedding', 'Qwen3-Reranker', 'Ruri', 'カタログ外']) await family(name).waitFor();
-      assert.equal(await page.locator('.mo-row').count(), 8, '6 catalog entries + 2 unclaimed directories');
+      const response = await page.request.get(origin + '/v1/models/catalog');
+      assert.equal(response.status(), 200);
+      const catalog = await response.json();
+      assert.equal(catalog.object, 'list');
+      const unclaimed = ['synthetic-reranker', '<img onerror=alert(1)>'];
+      assert.equal(await page.locator('.mo-row').count(), catalog.data.length + unclaimed.length, 'public catalog entries + fixture-owned unclaimed directories');
+      // 公開カタログの追加件数に追随し、各モデルが重複なく表示されることも確認する。
+      for (const title of [...catalog.data.map(entry => entry.repo_id.split('/').pop()), ...unclaimed]) {
+        assert.equal(await page.locator('.mo-row', {has: page.getByText(title, {exact: true})}).count(), 1, title);
+      }
       assert.equal(await page.locator('#panel img').count(), 0, 'model names are rendered as text');
       await modelRow('<img onerror=alert(1)>').waitFor();
       assert.equal(await modelRow('onnx-whisper').count(), 0, 'stt/ lies outside the roots');
