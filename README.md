@@ -2,6 +2,12 @@
 
 OpenAI-compatible な Embedding / Rerank API サーバーです。
 
+## Native / systemd デプロイ
+
+標準 unit と環境ファイルの例を `deploy/systemd/` に、CUDA 用の固定依存を `deploy/native/` に置いています。
+導入、配置先の変更、更新の手順は [native デプロイ手順](docs/native-deployment.md) を参照してください。
+実行ユーザーやホスト固有のパスは環境ファイルと systemd drop-in で設定できます。
+
 ## GPU モード切替
 
 `server.py` は `DEVICE_MODE` で実行デバイスを切り替えます。

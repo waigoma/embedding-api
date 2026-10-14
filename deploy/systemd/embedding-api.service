@@ -1,0 +1,27 @@
+[Unit]
+Description=embedding-api (native)
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/var/lib/embedding-api /var/cache/embedding-api
+
+[Service]
+Type=simple
+User=embedding-api
+Group=embedding-api
+WorkingDirectory=/opt/embedding-api/src
+Environment=HOME=/var/lib/embedding-api
+Environment=PYTHONUNBUFFERED=1
+Environment=VIRTUAL_ENV=/opt/embedding-api/venv
+Environment=PATH=/opt/embedding-api/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HOST=0.0.0.0
+Environment=PORT=7997
+EnvironmentFile=/etc/default/embedding-api
+ExecStart=/usr/bin/env ${VIRTUAL_ENV}/bin/uvicorn server:app --host ${HOST} --port ${PORT}
+PrivateTmp=true
+NoNewPrivileges=true
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target
